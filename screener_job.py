@@ -15,7 +15,7 @@ SETUP:
    Command: python3.10 /home/<username>/frvp_website/screener_job.py
    Time: તમને ફાવે એ (market બંધ થયા પછી, દા.ત. 18:00 UTC = 23:30 IST)
 """
-
+import os
 import time
 import json
 import numpy as np
@@ -28,14 +28,14 @@ from SmartApi import SmartConnect
 # ============================================================
 # CONFIG
 # ============================================================
-API_KEY = "YOUR_ANGEL_API_KEY"
-CLIENT_CODE = "YOUR_CLIENT_CODE"
-PASSWORD = "YOUR_PIN"
-TOTP_SECRET = "YOUR_TOTP_SECRET"
+API_KEY = os.environ["ANGEL_API_KEY"]
+CLIENT_CODE = os.environ["ANGEL_CLIENT_ID"]
+PASSWORD = os.environ["ANGEL_PASSWORD"]
+TOTP_SECRET = os.environ["ANGEL_TOTP_SECRET"]
 
 INSTRUMENT_MASTER_URL = "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json"
-NSE_MASTER_CSV = "/home/YOUR_USERNAME/frvp_website/nse_equity_master.csv"  # PythonAnywhere path
-RESULTS_FILE = "/home/YOUR_USERNAME/frvp_website/results.json"
+NSE_MASTER_CSV = "nse_equity_master.csv"
+RESULTS_FILE = "results.json"
 
 # ALL_STOCKS=True કરતા પહેલા, free tier ના daily task ના time-limit ને
 # ધ્યાનમાં રાખી પહેલા 100-300 stocks થી શરૂ કરવાની સલાહ છે
