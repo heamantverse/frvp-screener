@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="gu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FRVP Screener</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #131a24;
+    --border: #232d3b;
+    --text: #d7dee8;
+    --muted: #6b7a8f;
+    --accent: #3aa6ff;
+    --bull: #2fbf71;
+    --bear: #e5533d;
+    --watch: #e8b93c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 24px 16px 60px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  h1 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  .updated {
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .search {
+    width: 100%;
+    margin-bottom: 16px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+  .search:focus { outline: none; border-color: var(--accent); }
+  .table-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+    min-width: 820px;
+  }
+  thead th {
+    background: var(--panel);
+    text-align: right;
+    padding: 12px 14px;
+    font-weight: 500;
+    color: var(--muted);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--border);
+  }
+  thead th:first-child, thead th.signal-col { text-align: left; }
+  thead th:hover { color: var(--text); }
+  tbody td {
+    padding: 11px 14px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  tbody td:first-child, td.signal-col { text-align: left; }
+  tbody tr:hover { background: rgba(255,255,255,0.02); }
+  .sym { font-weight: 600; color: #fff; }
+  .badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 5px;
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+  .badge.bull { background: rgba(47,191,113,0.15); color: var(--bull); }
+  .badge.bear { background: rgba(229,83,61,0.15); color: var(--bear); }
+  .badge.watch { background: rgba(232,185,60,0.15); color: var(--watch); }
+  .empty { text-align: center; color: var(--muted); padding: 60px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>FRVP + Fibonacci Screener</h1>
+    <span class="updated" id="updated"></span>
+  </header>
+
+  <input class="search" id="search" placeholder="Symbol search karo (e.g. RELIANCE)">
+
+  <div class="table-scroll">
+    <table id="results">
+      <thead>
+        <tr>
+          <th data-key="symbol">Symbol</th>
+          <th data-key="ltp">LTP</th>
+          <th data-key="poc">POC</th>
+          <th data-key="vah">VAH</th>
+          <th data-key="val">VAL</th>
+          <th class="signal-col" data-key="signal">Signal</th>
+          <th data-key="short_target">Short Target</th>
+          <th data-key="long_target">Long Target</th>
+          <th data-key="stop_loss">SL</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+  <p class="empty" id="empty" style="display:none;">Kai stock na male</p>
+</div>
+
+<script>
+  const stocks = {{ stocks | tojson }};
+  const lastUpdated = "{{ last_updated }}";
+
+  document.getElementById("updated").textContent =
+    "Last updated: " + new Date(lastUpdated).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+
+  let sortKey = "symbol", sortDir = 1;
+
+  function fmt(v) {
+    return (v === null || v === undefined) ? "—" : v;
+  }
+
+  function badge(signal) {
+    if (signal.includes("WATCH")) return `<span class="badge watch">WATCH</span>`;
+    if (signal.includes("BUY")) return `<span class="badge bull">BUY</span>`;
+    return `<span class="badge bear">SELL</span>`;
+  }
+
+  function render() {
+    const q = document.getElementById("search").value.trim().toUpperCase();
+    let rows = stocks.filter(s => s.symbol.includes(q));
+    rows.sort((a, b) => {
+      const av = a[sortKey], bv = b[sortKey];
+      if (typeof av === "string") return sortDir * av.localeCompare(bv);
+      return sortDir * ((av ?? 0) - (bv ?? 0));
+    });
+
+    document.getElementById("empty").style.display = rows.length ? "none" : "block";
+    document.getElementById("tbody").innerHTML = rows.map(s => `
+      <tr>
+        <td class="sym">${s.symbol}</td>
+        <td>${fmt(s.ltp)}</td>
+        <td>${fmt(s.poc)}</td>
+        <td>${fmt(s.vah)}</td>
+        <td>${fmt(s.val)}</td>
+        <td class="signal-col">${badge(s.signal)}</td>
+        <td>${fmt(s.short_target)}</td>
+        <td>${fmt(s.long_target)}</td>
+        <td>${fmt(s.stop_loss)}</td>
+      </tr>
+    `).join("");
+  }
+
+  document.querySelectorAll("th[data-key]").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.key;
+      sortDir = (sortKey === key) ? -sortDir : 1;
+      sortKey = key;
+      render();
+    });
+  });
+  document.getElementById("search").addEventListener("input", render);
+
+  render();
+</script>
+</body>
+</html>
