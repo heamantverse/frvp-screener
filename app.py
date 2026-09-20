@@ -1,27 +1,51 @@
 """
-Flask Website - PythonAnywhere પર "Web" tab દ્વારા host થશે
-=================================================================
-આ ફાઇલ results.json વાંચી, એક સાદું, sortable table તરીકે webpage
-પર બતાવે છે. screener_job.py દરરોજ રાત્રે results.json update કરશે,
-આ app આપોઆપ latest data બતાવશે (કંઈ redeploy કરવાની જરૂર નથી).
+Flask Website - PythonAnywhere par host thase.
+results.json GitHub (private repo) parthi token sathe vanche chhe.
 """
 
-import json
 import os
+import time
+import requests
 from flask import Flask, render_template
 
 app = Flask(__name__)
 
-RESULTS_FILE = os.path.join(os.path.dirname(__file__), "results.json")
+GITHUB_REPO = "heamantverse/frvp-screener"
+GITHUB_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/results.json"
+CACHE_SECONDS = 600  # 10 minute cache
+
+_cache = {"data": None, "time": 0}
+
+
+def load_results():
+    if _cache["data"] and time.time() - _cache["time"] < CACHE_SECONDS:
+        return _cache["data"]
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise RuntimeError("GITHUB_TOKEN set nathi")
+
+    resp = requests.get(
+        GITHUB_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.raw+json",
+        },
+        timeout=20,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    _cache["data"] = data
+    _cache["time"] = time.time()
+    return data
 
 
 @app.route("/")
 def index():
-    if not os.path.exists(RESULTS_FILE):
-        return "હજુ કોઈ data નથી - પહેલા screener_job.py run થવું જોઈએ (Scheduled Task setup કરો)."
-
-    with open(RESULTS_FILE) as f:
-        data = json.load(f)
+    try:
+        data = load_results()
+    except Exception as e:
+        return f"Data load na thayo: {e}"
 
     return render_template("index.html", stocks=data["stocks"], last_updated=data["last_updated"])
 
