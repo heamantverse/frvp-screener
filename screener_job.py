@@ -1,20 +1,10 @@
 """
-Daily Screener Job (PythonAnywhere Scheduled Task તરીકે run થશે)
-====================================================================
-આ ફાઇલ રોજ રાત્રે automatically run થશે (PythonAnywhere ના "Scheduled
-Tasks" દ્વારા), બધા stocks નો 52-week FRVP + Fibonacci data ભેગો કરી
-results.json માં save કરશે. Website (app.py) એ ફાઇલ વાંચીને બતાવશે.
-
-SETUP:
-1. PythonAnywhere પર આ ફાઇલ, app.py, templates/index.html,
-   nse_equity_master.csv - બધું upload કરો (Files tab).
-2. Bash console ખોલી: pip3.10 install --user smartapi-python pyotp
-   flask logzero websocket-client pandas numpy requests
-3. નીચે CONFIG માં Angel One credentials ભરો.
-4. "Tasks" tab માં નવું Scheduled Task બનાવો:
-   Command: python3.10 /home/<username>/frvp_website/screener_job.py
-   Time: તમને ફાવે એ (market બંધ થયા પછી, દા.ત. 18:00 UTC = 23:30 IST)
+Daily screener job.
+Runs on GitHub Actions: fetches 52-week 30-minute candles from Angel One,
+computes volume-profile levels, Fibonacci levels and extra indicators,
+and writes results.json.
 """
+
 import os
 import time
 import json
@@ -38,8 +28,6 @@ INSTRUMENT_MASTER_URL = "https://margincalculator.angelone.in/OpenAPI_File/files
 NSE_MASTER_CSV = "nse_equity_master.csv"
 RESULTS_FILE = "results.json"
 
-# ALL_STOCKS=True કરતા પહેલા, free tier ના daily task ના time-limit ને
-# ધ્યાનમાં રાખી પહેલા 100-300 stocks થી શરૂ કરવાની સલાહ છે
 ALL_STOCKS = False
 SYMBOL_LIST = [
     "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK",
@@ -53,6 +41,7 @@ SYMBOL_LIST = [
     "SUNPHARMA", "TATACONSUMER", "TATAMOTORS", "TATASTEEL", "TCS",
     "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
 ]
+
 INTERVAL = "THIRTY_MINUTE"
 WEEKS_LOOKBACK = 52
 CHUNK_DAYS = 28
@@ -60,6 +49,23 @@ VALUE_AREA_PCT = 0.70
 NUM_BINS = 24
 API_DELAY_SEC = 0.4
 CONFLUENCE_TOLERANCE_PCT = 0.5
+
+# Extra indicators
+LOW_LIQUIDITY_CR = 5        # avg daily traded value below this (Rs crore) = "Low"
+CORP_ACTION_GAP = 0.25      # single-day gap above 25% = possible split/bonus
+NIFTY_TOKEN = "99926000"    # Nifty 50 index token on Angel One
+
+
+def _num(name):
+    try:
+        return float(os.environ.get(name, "") or 0)
+    except ValueError:
+        return 0.0
+
+
+# Optional (set as GitHub Secrets). If missing, Qty is left blank.
+CAPITAL = _num("CAPITAL")
+RISK_PCT = _num("RISK_PCT")
 
 FIB_LEVELS = [
     (1.618, "Extension target (breakout hold kare to)"),
@@ -123,6 +129,8 @@ def fetch_52_week_data(smart_api, token):
         return pd.DataFrame()
     df = pd.DataFrame(all_chunks, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
+    # chunk boundaries can repeat a candle; remove duplicates
+    df = df.drop_duplicates(subset="timestamp").sort_values("timestamp").reset_index(drop=True)
     return df
 
 
@@ -225,6 +233,95 @@ def analyze_signal(ltp, poc, vah, val, fib_levels):
     }
 
 
+def trend_label(ltp, dma50, dma200):
+    if dma50 is None or dma200 is None:
+        return "NA"
+    if ltp > dma200 and dma50 > dma200:
+        return "Up"
+    if ltp < dma200 and dma50 < dma200:
+        return "Down"
+    return "Mixed"
+
+
+def calculate_extras(df):
+    d = df.sort_values("timestamp").copy()
+    d["date"] = d["timestamp"].astype(str).str[:10]
+    daily = d.groupby("date", sort=True).agg(
+        open=("open", "first"), high=("high", "max"), low=("low", "min"),
+        close=("close", "last"), volume=("volume", "sum"),
+    ).reset_index()
+
+    n = len(daily)
+    closes = daily["close"]
+    ltp = float(closes.iloc[-1])
+    dma50 = float(closes.tail(50).mean()) if n >= 50 else None
+    dma200 = float(closes.tail(200).mean()) if n >= 200 else None
+
+    vol_ratio = None
+    if n >= 21:
+        avg20 = float(daily["volume"].iloc[-21:-1].mean())
+        if avg20 > 0:
+            vol_ratio = round(float(daily["volume"].iloc[-1]) / avg20, 2)
+
+    avg_value_cr = round(float((daily["close"] * daily["volume"]).tail(20).mean()) / 1e7, 1)
+
+    corp_action = False
+    if n >= 2:
+        gaps = daily["open"].iloc[1:].values / daily["close"].iloc[:-1].values - 1
+        corp_action = bool((np.abs(gaps) > CORP_ACTION_GAP).any())
+
+    return {
+        "trend": trend_label(ltp, dma50, dma200),
+        "vol_ratio": vol_ratio,
+        "avg_value_cr": avg_value_cr,
+        "liquidity": "Low" if avg_value_cr < LOW_LIQUIDITY_CR else "OK",
+        "corp_action": corp_action,
+    }
+
+
+def risk_reward(ltp, sig):
+    target, sl = sig["short_target"], sig["stop_loss"]
+    if target is None or sl is None:
+        return None, None
+    if sig["bias"] == "Bullish":
+        reward, risk = target - ltp, ltp - sl
+    else:
+        reward, risk = ltp - target, sl - ltp
+    if reward <= 0 or risk <= 0:
+        return None, None
+    rr = round(reward / risk, 2)
+    qty = None
+    if CAPITAL > 0 and RISK_PCT > 0:
+        qty = int(min((CAPITAL * RISK_PCT / 100) / risk, CAPITAL / ltp))
+    return rr, qty
+
+
+def nifty_status(smart_api):
+    try:
+        end = datetime.now()
+        start = end - timedelta(days=420)
+        resp = smart_api.getCandleData({
+            "exchange": "NSE", "symboltoken": NIFTY_TOKEN, "interval": "ONE_DAY",
+            "fromdate": start.strftime("%Y-%m-%d 09:15"),
+            "todate": end.strftime("%Y-%m-%d 15:30"),
+        })
+        rows = resp.get("data") or []
+        closes = [float(r[4]) for r in rows]
+        if len(closes) < 200:
+            return None
+        ltp = closes[-1]
+        dma50 = sum(closes[-50:]) / 50
+        dma200 = sum(closes[-200:]) / 200
+        return {
+            "trend": trend_label(ltp, dma50, dma200),
+            "close": round(ltp, 2),
+            "dma200": round(dma200, 2),
+        }
+    except Exception as e:
+        print(f"[WARN] Nifty status failed: {e}")
+        return None
+
+
 def main():
     smart_api = login()
 
@@ -245,21 +342,30 @@ def main():
                 continue
             fib_levels = calculate_fib_levels(levels["VAL"], levels["VAH"])
             signal_info = analyze_signal(levels["LTP"], levels["POC"], levels["VAH"], levels["VAL"], fib_levels)
+            extras = calculate_extras(df)
+            rr, qty = risk_reward(levels["LTP"], signal_info)
+            ltp = levels["LTP"]
             results.append({
                 "symbol": symbol,
-                "ltp": levels["LTP"],
+                "ltp": ltp,
                 "poc": levels["POC"],
                 "vah": levels["VAH"],
                 "val": levels["VAL"],
                 "week52_high": levels["week52_high"],
                 "week52_low": levels["week52_low"],
                 **signal_info,
+                **extras,
+                "from_high_pct": round((ltp / levels["week52_high"] - 1) * 100, 1),
+                "from_low_pct": round((ltp / levels["week52_low"] - 1) * 100, 1),
+                "rr": rr,
+                "qty": qty,
             })
         except Exception as e:
             print(f"[ERROR] {symbol}: {e}")
 
     output = {
         "last_updated": datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(),
+        "market": nifty_status(smart_api),
         "stocks": results,
     }
     with open(RESULTS_FILE, "w") as f:
