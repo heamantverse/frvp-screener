@@ -6,3 +6,4 @@ websocket-client
 pandas
 numpy
 requests
+reportlab
