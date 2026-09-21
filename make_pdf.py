@@ -16,7 +16,7 @@ def sig(s):
 
 stocks = sorted(data["stocks"], key=lambda s: (order.get(sig(s), 3), s["symbol"]))
 
-header = ["Symbol", "LTP", "POC", "VAH", "VAL", "Signal", "Short T", "Long T", "SL"]
+header = ["Symbol", "LTP", "Point", "VHIGH", "VLOW", "Signal", "Short T", "Long T", "SL"]
 rows = [header]
 for s in stocks:
     rows.append([
@@ -25,7 +25,7 @@ for s in stocks:
     ])
 
 styles = getSampleStyleSheet()
-doc = SimpleDocTemplate("FRVP_report.pdf", pagesize=landscape(A4),
+doc = SimpleDocTemplate("Screener_report.pdf", pagesize=landscape(A4),
                         leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
 
 table = Table(rows, repeatRows=1)
@@ -44,7 +44,7 @@ for i, s in enumerate(stocks, start=1):
 table.setStyle(TableStyle(style))
 
 doc.build([
-    Paragraph("FRVP + Fibonacci Screener", styles["Title"]),
+    Paragraph("Scopevision Screener", styles["Title"]),
     Paragraph("Last updated: " + data["last_updated"][:16].replace("T", " ") + " IST", styles["Normal"]),
     Spacer(1, 12),
     table,
