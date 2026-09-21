@@ -1,4 +1,4 @@
-name: Daily FRVP Screener
+name: Daily Screener
 
 on:
   schedule:
@@ -42,14 +42,19 @@ jobs:
           git commit -m "Daily update" || echo "No changes"
           git push
 
-      - name: Send PDF to Telegram
+      - name: Send reports to Telegram
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python make_pdf.py
-          curl -s -o /dev/null -w "Telegram status: %{http_code}\n" \
+          python make_excel.py
+          curl -s -o /dev/null -w "PDF status: %{http_code}\n" \
             -F chat_id="$TG_CHAT" \
-            -F document=@FRVP_report.pdf \
-            -F caption="FRVP daily screener" \
+            -F document=@Screener_report.pdf \
+            -F caption="Scopevision Screener" \
+            "https://api.telegram.org/bot${TG_TOKEN}/sendDocument"
+          curl -s -o /dev/null -w "Excel status: %{http_code}\n" \
+            -F chat_id="$TG_CHAT" \
+            -F document=@Screener_report.xlsx \
             "https://api.telegram.org/bot${TG_TOKEN}/sendDocument"
