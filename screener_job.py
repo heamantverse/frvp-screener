@@ -117,11 +117,16 @@ def fetch_52_week_data(smart_api, token):
             "todate": chunk_end.strftime("%Y-%m-%d 15:30"),
         }
         try:
-            response = smart_api.getCandleData(params)
-            if response.get("status") and response.get("data"):
-                all_chunks.extend(response["data"])
-        except Exception:
-            pass
+                    for attempt in range(3):
+            try:
+                response = smart_api.getCandleData(params)
+                if response.get("status"):
+                    if response.get("data"):
+                        all_chunks.extend(response["data"])
+                    break
+            except Exception:
+                pass
+            time.sleep(1.5 * (attempt + 1))
         chunk_start = chunk_end
         time.sleep(API_DELAY_SEC)
 
