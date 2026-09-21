@@ -23,6 +23,7 @@ import pandas as pd
 import requests
 import pyotp
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from SmartApi import SmartConnect
 
 # ============================================================
@@ -249,7 +250,7 @@ def main():
             print(f"[ERROR] {symbol}: {e}")
 
     output = {
-        "last_updated": datetime.now().isoformat(),
+        "last_updated": datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(),
         "stocks": results,
     }
     with open(RESULTS_FILE, "w") as f:
