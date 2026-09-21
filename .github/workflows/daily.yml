@@ -2,11 +2,11 @@ name: Daily FRVP Screener
 
 on:
   schedule:
-    - cron: '0 11 * * 1-5'   # Mon-Fri, 4:30 PM IST (market band thaya pachi)
-  workflow_dispatch:          # manually run karva mate button
+    - cron: '0 11 * * 1-5'   # Mon-Fri, 4:30 PM IST
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   run-screener:
@@ -29,8 +29,13 @@ jobs:
           ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
         run: python screener_job.py
 
-      - name: Commit results
+      - name: Publish results to private repo
+        env:
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
         run: |
+          git clone "https://x-access-token:${DATA_REPO_TOKEN}@github.com/heamantverse/scope-data.git" data
+          cp results.json data/results.json
+          cd data
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add results.json
