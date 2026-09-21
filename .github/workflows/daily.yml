@@ -27,6 +27,8 @@ jobs:
           ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
           ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
           ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
+          CAPITAL: ${{ secrets.CAPITAL }}
+          RISK_PCT: ${{ secrets.RISK_PCT }}
         run: python screener_job.py
 
       - name: Publish results to private repo
