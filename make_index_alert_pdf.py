@@ -1,73 +1,159 @@
-import json
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+"""
+Pre-market Nifty & BankNifty alert.
+Gai kali ni High-Low range parthi fib levels ganine, gai kali no close
+ane aaje no pre-open bhav kaya level ni najik chhe e joi ne
+CALL/PUT/WATCH, SL ane Target Telegram par mokle chhe.
+"""
 
-with open("index_alert.json") as f:
-    data = json.load(f)
+import os
+import time
+import requests
+import pyotp
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from SmartApi import SmartConnect
 
-styles = getSampleStyleSheet()
-story = [
-    Paragraph("Pre-market Index Alert", styles["Title"]),
-    Paragraph("Generated: " + data["generated_at"][:16].replace("T", " ") + " IST", styles["Normal"]),
-    Spacer(1, 12),
+API_KEY = os.environ["ANGEL_API_KEY"]
+CLIENT_CODE = os.environ["ANGEL_CLIENT_ID"]
+PASSWORD = os.environ["ANGEL_PASSWORD"]
+TOTP_SECRET = os.environ["ANGEL_TOTP_SECRET"]
+TG_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TG_CHAT = os.environ["TELEGRAM_CHAT_ID"]
+
+# Angel One index tokens — jo error aave to check karvo padse
+INDEXES = [
+    {"name": "NIFTY 50", "token": "99926000"},
+    {"name": "NIFTY BANK", "token": "99926009"},
 ]
 
-action_color = {"CALL": colors.HexColor("#15803d"), "PUT": colors.HexColor("#b91c1c"), "WATCH": colors.HexColor("#b45309")}
+LEVELS = [
+    (0.0,    "Break down",       "PUT"),
+    (0.25,   "Buy Reversal",     "CALL"),
+    (0.75,   "Sell Reversal",    "PUT"),
+    (1.0,    "Break out",        "CALL"),
+    (1.272,  "Target 1",         "WATCH"),
+    (-0.272, "Target 1 (down)",  "WATCH"),
+]
 
 
-def sig_block(title, sig):
-    if not sig:
-        return [Paragraph(f"{title}: data na malyu", styles["Normal"])]
-    c = action_color.get(sig["action"], colors.black)
-    lines = [
-        Paragraph(f"<b>{title}</b>: nearest {sig['ratio']} ({sig['label']}) @ {sig['level_price']}", styles["Normal"]),
-        Paragraph(f'<font color="{c.hexval()}"><b>{sig["action"]}</b></font>', styles["Normal"]),
-    ]
-    if sig["sl"] is not None:
-        lines.append(Paragraph(f"Index SL: {sig['sl']}   Index Target: {sig['tp']}", styles["Normal"]))
+def login():
+    smart_api = SmartConnect(api_key=API_KEY)
+    totp = pyotp.TOTP(TOTP_SECRET).now()
+    data = smart_api.generateSession(CLIENT_CODE, PASSWORD, totp)
+    if not data.get("status"):
+        raise SystemExit(f"Login failed: {data}")
+    return smart_api
+
+
+def fib(ratio, lo, hi):
+    return lo + (hi - lo) * ratio
+
+
+def prev_day_range(smart_api, token):
+    end = datetime.now()
+    start = end - timedelta(days=10)
+    resp = smart_api.getCandleData({
+        "exchange": "NSE", "symboltoken": token, "interval": "ONE_DAY",
+        "fromdate": start.strftime("%Y-%m-%d 09:15"),
+        "todate": end.strftime("%Y-%m-%d 15:30"),
+    })
+    rows = resp.get("data") or []
+    if not rows:
+        return None
+    last = rows[-1]
+    return {"date": last[0][:10], "high": float(last[2]), "low": float(last[3]), "close": float(last[4])}
+
+
+def get_ltp(smart_api, token, name):
+    try:
+        resp = smart_api.ltpData("NSE", name, token)
+        if resp.get("status") and resp.get("data"):
+            return float(resp["data"]["ltp"])
+    except Exception as e:
+        print(f"[WARN] LTP failed for {name}: {e}")
+    return None
+
+
+def nearest_level(price, lo, hi):
+    computed = sorted(
+        [(ratio, label, action, fib(ratio, lo, hi)) for ratio, label, action in LEVELS],
+        key=lambda x: x[0],
+    )
+    best_idx = min(range(len(computed)), key=lambda i: abs(price - computed[i][3]))
+    ratio, label, action, lvl_price = computed[best_idx]
+    below = computed[best_idx - 1] if best_idx > 0 else None
+    above = computed[best_idx + 1] if best_idx < len(computed) - 1 else None
+
+    if action == "CALL":
+        sl = below[3] if below else lvl_price
+        tp = above[3] if above else lvl_price
+    elif action == "PUT":
+        sl = above[3] if above else lvl_price
+        tp = below[3] if below else lvl_price
     else:
-        lines.append(Paragraph("Confirmation ni wait karo (stall zone)", styles["Normal"]))
-    return lines
+        sl = tp = None
+
+    return {
+        "ratio": ratio, "label": label, "action": action, "level_price": round(lvl_price, 2),
+        "sl": round(sl, 2) if sl is not None else None,
+        "tp": round(tp, 2) if tp is not None else None,
+    }
 
 
-for idx in data["indexes"]:
-    story.append(Paragraph(idx["name"], styles["Heading2"]))
-    if idx.get("error"):
-        story.append(Paragraph(idx["error"], styles["Normal"]))
-        story.append(Spacer(1, 10))
-        continue
+def fmt_block(idx_name, price, tag, sig):
+    if sig is None:
+        return f"{idx_name} ({tag}): data na malyu"
+    emoji = {"CALL": "🟢 CALL", "PUT": "🔴 PUT", "WATCH": "🟡 WATCH"}[sig["action"]]
+    lines = [f"*{idx_name}* ({tag}): {price}",
+             f"Nearest: {sig['ratio']} {sig['label']} @ {sig['level_price']}",
+             f"Bias: {emoji}"]
+    if sig["sl"] is not None:
+        lines.append(f"SL: {sig['sl']}   Target: {sig['tp']}")
+    else:
+        lines.append("Confirmation ni wait karo (breakout/breakdown thay tyare j entry)")
+    return "\n".join(lines)
 
-    pd_ = idx["prev_day"]
-    story.append(Paragraph(f"Gai kali ({pd_['date']}): Low {pd_['low']} — High {pd_['high']} — Close {pd_['close']}", styles["Normal"]))
-    story += sig_block("Gai kali close", idx["close_signal"])
-    if idx.get("ltp"):
-        story.append(Spacer(1, 4))
-        story += sig_block(f"Aaje bhav ({idx['ltp']})", idx["today_signal"])
 
-    opt = idx.get("option")
-    if opt:
-        story.append(Spacer(1, 6))
-        story.append(Paragraph(f"<b>Suggested option: {opt['symbol']}</b> ({opt['type']}, strike {opt['strike']}, expiry {opt['expiry']})", styles["Normal"]))
-        lv = opt.get("levels")
-        st = opt.get("sl_target")
-        if lv:
-            story.append(Paragraph(f"Option LTP: {lv['ltp']}   POC: {lv['poc']}   VAH: {lv['vah']}   VAL: {lv['val']}", styles["Normal"]))
-        if st:
-            story.append(Paragraph(f"<b>Option SL: {st['sl']}   Option Target: {st['target']}</b>", styles["Normal"]))
+def send_telegram(text):
+    resp = requests.post(
+        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+        data={"chat_id": TG_CHAT, "text": text, "parse_mode": "Markdown"},
+        timeout=20,
+    )
+    print("Telegram status:", resp.status_code, resp.text[:200])
+
+
+def main():
+    smart_api = login()
+    now_ist = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p")
+    blocks = [f"*Pre-market Alert* — {now_ist} IST\n"]
+
+    for idx in INDEXES:
+        rng = prev_day_range(smart_api, idx["token"])
+        if not rng:
+            blocks.append(f"{idx['name']}: gai kali no data na malyo")
+            continue
+
+        lo, hi = rng["low"], rng["high"]
+        close_sig = nearest_level(rng["close"], lo, hi)
+        blocks.append(fmt_block(idx["name"], rng["close"], f"Gai kali close, {rng['date']}", close_sig))
+
+        time.sleep(0.5)
+        ltp = get_ltp(smart_api, idx["token"], idx["name"])
+        if ltp is not None:
+            today_sig = nearest_level(ltp, lo, hi)
+            blocks.append(fmt_block(idx["name"], ltp, "Aaje pre-open bhav", today_sig))
         else:
-            story.append(Paragraph("Option na potana levels na mali shakya (nano data hoi shake)", styles["Normal"]))
-    elif idx.get("option_error"):
-        story.append(Paragraph(f"Option: {idx['option_error']}", styles["Normal"]))
+            blocks.append(f"{idx['name']} (Aaje pre-open bhav): live LTP na malyo, upar no gai kali no analysis j vaapro")
 
-    story.append(Spacer(1, 14))
+        blocks.append(f"Range (gai kali): Low {lo} — High {hi}\n")
 
-story.append(Paragraph(
-    "Note: Aa filter/suggestion chhe, kharidva-vechvani guarantee ke salah nathi. "
-    "Option premium ni chaal delta/theta par pan depend kare chhe, faqat levels par nahi.",
-    styles["Normal"]))
+    text = "\n\n".join(blocks)
+    text += "\n_Note: index ma direct trade nathi thato, options chain ma CALL/PUT levu padse. Aa filter chhe, salah nathi._"
 
-doc = SimpleDocTemplate("Index_Alert.pdf", pagesize=A4, leftMargin=30, rightMargin=30, topMargin=30, bottomMargin=30)
-doc.build(story)
-print("PDF ready")
+    print(text)
+    send_telegram(text)
+
+
+if __name__ == "__main__":
+    main()
