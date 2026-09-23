@@ -84,21 +84,23 @@ for idx in data["indexes"]:
     # ---- Option table ----
     opts = idx.get("options") or []
     if opts:
-        header = [p(h, small_white) for h in ["Type", "Strike", "Symbol", "LTP", "Delta", "Theta", "Near Zone", "SL", "Target"]]
+            # ---- Option table ----
+    opts = idx.get("options") or []
+    if opts:
+        header = [p(h, small_white) for h in ["Type", "Strike", "Symbol", "LTP", "Delta", "Theta", "Near Zone"]]
         rows = [header]
         for o in opts:
             if o.get("error"):
                 rows.append([p(f"{o['type']} {o['moneyness']}"), p(cell(o.get("strike"))),
-                             p("—"), p("—"), p("—"), p("—"), p(o["error"]), p("—"), p("—")])
+                             p("—"), p("—"), p("—"), p("—"), p(o["error"])])
                 continue
             rows.append([
                 p(f"{o['type']} {o['moneyness']}"), p(cell(o.get("strike"))), p(o.get("symbol", "—")),
                 p(cell(o.get("ltp"))), p(cell(o.get("delta"))), p(cell(o.get("theta"))),
                 p(f"{o.get('near_name') or '—'} @ {cell(o.get('near_price'))}"),
-                p(cell(o.get("sl"))), p(cell(o.get("target"))),
             ])
 
-        opt_table = Table(rows, colWidths=[45, 40, 95, 40, 35, 35, 100, 40, 40], repeatRows=1)
+        opt_table = Table(rows, colWidths=[45, 40, 100, 40, 40, 40, 130], repeatRows=1)
         opt_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
             ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
@@ -106,8 +108,7 @@ for idx in data["indexes"]:
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ]))
         story.append(Spacer(1, 6))
-        story.append(opt_table)
-    else:
+        story.append(opt_table)    else:
         story.append(Paragraph(idx.get("option_error", "Options na malya"), styles["Normal"]))
 
     story.append(Spacer(1, 16))
