@@ -1,13 +1,12 @@
 """
 Intraday Fib Open Alert – Nifty + BankNifty
-Previous day 5-min Volume Profile + Fib
+Previous day High-Low range + Fib (index candles ma volume 0 hoy chhe,
+etle volume-profile na badle sidhi high-low range vaparay chhe)
 Alert within ~5 mins of market open
 """
 
 import os
 import time
-import json
-import numpy as np
 import pandas as pd
 import requests
 import pyotp
@@ -29,8 +28,6 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 NIFTY_TOKEN = "99926000"
 BANKNIFTY_TOKEN = "99926009"
 INTERVAL = "FIVE_MINUTE"
-VALUE_AREA_PCT = 0.70
-NUM_BINS = 24
 TOLERANCE_PCT = 0.20
 
 FIB_LEVELS = [
@@ -134,65 +131,21 @@ def fetch_opening_candle(smart_api, token):
     print("Failed to fetch opening candle")
     return None
 
-def calculate_volume_profile(df):
+def range_from_prev_day(df):
+    """Index candles ma volume 0 hoy chhe, etle high-low range j vaparay chhe."""
     if df.empty:
-        print("VP debug: dataframe khali chhe")
+        print("Range debug: dataframe khali chhe")
         return None
-    price_min, price_max = df["low"].min(), df["high"].max()
-    total_vol_check = df["volume"].sum()
-    print(f"VP debug: price_min={price_min} price_max={price_max} total_volume={total_vol_check}")
+    price_min = float(df["low"].min())
+    price_max = float(df["high"].max())
+    print(f"Range debug: low={price_min} high={price_max}")
     if price_max <= price_min:
-        print("VP debug: price_max <= price_min, fail")
+        print("Range debug: high <= low, fail")
         return None
-
-    tick = 0.05
-    total_ticks = max(1, round((price_max - price_min) / tick))
-    ticks_per_row = max(1, round(total_ticks / NUM_BINS))
-    bin_edges = [price_min]
-    remaining, px = total_ticks, price_min
-    while remaining > 0:
-        tt = min(ticks_per_row, remaining)
-        px += tt * tick
-        bin_edges.append(px)
-        remaining -= tt
-    bin_edges = np.array(bin_edges)
-    actual_bins = len(bin_edges) - 1
-    bin_volumes = np.zeros(actual_bins)
-
-    for _, row in df.iterrows():
-        low, high, vol = row["low"], row["high"], row["volume"]
-        if vol <= 0 or high <= low:
-            continue
-        start_bin = max(0, min(np.searchsorted(bin_edges, low, side="right") - 1, actual_bins - 1))
-        end_bin = max(0, min(np.searchsorted(bin_edges, high, side="right") - 1, actual_bins - 1))
-        span = max(1, end_bin - start_bin + 1)
-        bin_volumes[start_bin:end_bin + 1] += vol / span
-
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    total_volume = bin_volumes.sum()
-    print(f"VP debug: bin_volumes total={total_volume}")
-    if total_volume == 0:
-        return None
-
-    poc_idx = int(np.argmax(bin_volumes))
-    target = total_volume * VALUE_AREA_PCT
-    cum = bin_volumes[poc_idx]
-    low_i = high_i = poc_idx
-
-    while cum < target and (low_i > 0 or high_i < actual_bins - 1):
-        vol_below = bin_volumes[low_i - 1] if low_i > 0 else -1
-        vol_above = bin_volumes[high_i + 1] if high_i < actual_bins - 1 else -1
-        if vol_above >= vol_below:
-            high_i += 1
-            cum += bin_volumes[high_i]
-        else:
-            low_i -= 1
-            cum += bin_volumes[low_i]
-
     return {
-        "POC": round(float(bin_centers[poc_idx]), 2),
-        "VAH": round(float(bin_centers[high_i]), 2),
-        "VAL": round(float(bin_centers[low_i]), 2),
+        "POC": round((price_min + price_max) / 2, 2),
+        "VAH": round(price_max, 2),
+        "VAL": round(price_min, 2),
     }
 
 def calculate_fib_levels(val, vah):
@@ -261,11 +214,11 @@ def process_index(smart_api, name, token, prev_day):
         print(f"{name}: Previous day data empty")
         return None
 
-    vp = calculate_volume_profile(df)
+    vp = range_from_prev_day(df)
     if vp is None:
-        print(f"{name}: Volume profile failed")
+        print(f"{name}: Range calc failed")
         return None
-    print(f"{name} VP → POC:{vp['POC']} VAL:{vp['VAL']} VAH:{vp['VAH']}")
+    print(f"{name} Range → POC:{vp['POC']} VAL:{vp['VAL']} VAH:{vp['VAH']}")
 
     fib_levels = calculate_fib_levels(vp["VAL"], vp["VAH"])
     candle = fetch_opening_candle(smart_api, token)
