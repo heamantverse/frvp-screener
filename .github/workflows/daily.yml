@@ -2,8 +2,8 @@ name: Daily FRVP Screener
 
 on:
   schedule:
-    - cron: '0 11 * * 1-5'   # Mon-Fri, 4:30 PM IST (market band thaya pachi)
-  workflow_dispatch:          # manually run karva mate button
+    - cron: '0 11 * * 1-5'   # Mon-Fri, 4:30 PM IST
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -27,6 +27,8 @@ jobs:
           ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
           ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
           ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
+          CAPITAL: ${{ secrets.CAPITAL }}
+          RISK_PCT: ${{ secrets.RISK_PCT }}
         run: python screener_job.py
 
       - name: Commit results
@@ -36,3 +38,23 @@ jobs:
           git add results.json
           git commit -m "Daily update" || echo "No changes"
           git push
+
+      - name: Build PDF + Excel and send to Telegram
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python make_pdf.py
+          python make_excel.py
+
+          curl -s -o /dev/null -w "PDF status: %{http_code}\n" \
+            -F chat_id="$TG_CHAT" \
+            -F document=@Screener_report.pdf \
+            -F caption="Daily FRVP Screener Report" \
+            "https://api.telegram.org/bot${TG_TOKEN}/sendDocument"
+
+          curl -s -o /dev/null -w "Excel status: %{http_code}\n" \
+            -F chat_id="$TG_CHAT" \
+            -F document=@Screener_report.xlsx \
+            -F caption="Daily FRVP Screener Excel" \
+            "https://api.telegram.org/bot${TG_TOKEN}/sendDocument"
