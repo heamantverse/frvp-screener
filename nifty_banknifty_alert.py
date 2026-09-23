@@ -63,22 +63,28 @@ OUT_FILE = "index_alert.json"
 # increasing wait karse.
 # ============================================================
 
-def safe_call(fn, *args, retries=5, base_delay=3, label="", **kwargs):
-    """Call any smart_api function with retry + backoff on rate-limit errors."""
+def safe_call(fn, *args, retries=8, base_delay=8, max_wait=60, label="", **kwargs):
+    """Call any smart_api function with retry + backoff on rate-limit errors.
+
+    Pre-market samaye Angel na historical-data server par bhare congestion
+    hoy chhe (ghana users same time e candle data mangta hoy), etle
+    30-40s ni andar rate-limit clear nathi thati — lambi backoff joiye chhe.
+    Worst case total wait ~ 8+16+24+32+40+48+56 = 224s (~3.7 min) per call.
+    """
     for attempt in range(1, retries + 1):
         try:
             return fn(*args, **kwargs)
         except DataException as e:
             msg = str(e)
             if "exceeding access rate" in msg and attempt < retries:
-                wait = base_delay * attempt  # 3s, 6s, 9s, 12s...
+                wait = min(base_delay * attempt, max_wait)
                 print(f"[rate-limit] {label} attempt {attempt}/{retries} failed, retrying in {wait}s")
                 time.sleep(wait)
             else:
                 raise
         except Exception as e:
             if attempt < retries:
-                wait = base_delay * attempt
+                wait = min(base_delay * attempt, max_wait)
                 print(f"[retry] {label} attempt {attempt}/{retries} error: {e}, retrying in {wait}s")
                 time.sleep(wait)
             else:
@@ -335,7 +341,7 @@ def build_option(smart_api, opts_df, strike, opt_type, moneyness, greeks_map):
     if not row:
         return {"type": opt_type, "moneyness": moneyness, "strike": strike, "error": "strike na malyo"}
 
-    time.sleep(1)
+    time.sleep(2)
     odf = fetch_recent_data(smart_api, row["token"])
     levels = calculate_volume_profile(odf)
     nz = option_nearest_zone(levels)
@@ -352,6 +358,7 @@ def build_option(smart_api, opts_df, strike, opt_type, moneyness, greeks_map):
 
 def main():
     smart_api = login()
+    time.sleep(3)  # login pachi tarat j call karvathi rate-limit vadhu lage chhe, thodu settle thava do
     master_df = load_master()
     today_ist = datetime.now(ZoneInfo("Asia/Kolkata")).date()
 
@@ -370,7 +377,7 @@ def main():
         entry["levels"] = full_ladder(lo, hi)
         entry["close_signal"] = nearest_bias(rng["close"], lo, hi)
 
-        time.sleep(1)
+        time.sleep(2)
         ltp = get_ltp(smart_api, idx["token"], idx["name"])
         entry["ltp"] = ltp
         entry["today_signal"] = nearest_bias(ltp, lo, hi) if ltp else None
@@ -390,7 +397,7 @@ def main():
 
             atm, itm_ce, itm_pe = pick_strikes(opts_df, spot)
 
-            time.sleep(1)
+            time.sleep(2)
             greeks_map = fetch_greeks(smart_api, idx["opt_name"], expiry_dt)
 
             for strike, opt_type, money in [
@@ -405,7 +412,7 @@ def main():
             entry["option_error"] = entry.get("option_error", "options na malya")
 
         result["indexes"].append(entry)
-        time.sleep(1.5)
+        time.sleep(2)
 
     with open(OUT_FILE, "w") as f:
         json.dump(result, f, indent=2)
