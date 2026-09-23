@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install numpy pandas requests pyotp smartapi-python logzero
+          pip install numpy pandas requests pyotp smartapi-python logzero websocket-client
 
       - name: Run Fib Open Alert
         env:
