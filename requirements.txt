@@ -8,5 +8,3 @@ requests
 flask
 reportlab
 openpyxl
- - name: Install requirements
-        run: pip install smartapi-python pyotp logzero websocket-client requests reportlab
