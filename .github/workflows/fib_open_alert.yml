@@ -2,8 +2,8 @@ name: Fib Intraday Open Alert
 
 on:
   schedule:
-    # 9:18 AM IST = 03:48 UTC (Monday to Friday)
-    - cron: '18 3 * * 1-5'
+    # 9:22 AM IST = 03:52 UTC (Monday to Friday)
+    - cron: '52 3 * * 1-5'
   workflow_dispatch:
 
 jobs:
