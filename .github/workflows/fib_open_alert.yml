@@ -2,9 +2,9 @@ name: Fib Intraday Open Alert
 
 on:
   schedule:
-    # 9:18 AM IST = 3:48 UTC (Monday to Friday)
+    # 9:18 AM IST = 03:48 UTC (Monday to Friday)
     - cron: '18 3 * * 1-5'
-  workflow_dispatch:   # manual run button
+  workflow_dispatch:
 
 jobs:
   run-fib-alert:
@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install numpy pandas requests pyotp smartapi-python
+          pip install numpy pandas requests pyotp smartapi-python logzero
 
       - name: Run Fib Open Alert
         env:
