@@ -1,7 +1,8 @@
 """
 Pre-market Nifty & BankNifty options table.
 Har index mate CE-ATM, CE-ITM, PE-ATM, PE-ITM — chaare options no potano
-data (POC/VAH/VAL, named levels, SL/Target) ane Greeks (delta/theta).
+data (POC/VAH/VAL, named levels) ane Greeks (delta/theta). Index no potano
+badho named level ladder pan generate thay chhe.
 """
 
 import os
@@ -63,6 +64,14 @@ def login():
 
 def fib(ratio, lo, hi):
     return lo + (hi - lo) * ratio
+
+
+def full_ladder(lo, hi):
+    return [
+        {"name": name, "price": round(fib(ratio, lo, hi), 2)}
+        for ratio, name in FIB_RATIOS_NAMED
+        if fib(ratio, lo, hi) > 0
+    ]
 
 
 def prev_day_range(smart_api, token):
@@ -156,6 +165,7 @@ def fetch_greeks(smart_api, opt_name, expiry_dt):
         expiry_str = expiry_dt.strftime("%d%b%Y").upper()
         resp = smart_api.optionGreek({"name": opt_name, "expirydate": expiry_str})
         rows = resp.get("data") or []
+        print(f"[DEBUG] greeks for {opt_name}: status={resp.get('status')} rows={len(rows)} sample={rows[:1]}")
         out = {}
         for r in rows:
             try:
@@ -259,7 +269,7 @@ def calculate_volume_profile(df, num_bins=24, value_area_pct=0.70):
     }
 
 
-def option_levels_and_target(levels):
+def option_nearest_zone(levels):
     if levels is None:
         return None
     ltp, val, vah = levels["ltp"], levels["val"], levels["vah"]
@@ -273,14 +283,7 @@ def option_levels_and_target(levels):
     if not ladder:
         return None
     nearest = min(ladder, key=lambda x: abs(x[0] - ltp))
-    above = [p for p in ladder if p[0] > ltp]
-    below = [p for p in ladder if p[0] < ltp]
-    return {
-        "near_name": nearest[1],
-        "near_price": nearest[0],
-        "sl": below[-1][0] if below else round(ltp * 0.7, 2),
-        "target": above[0][0] if above else None,
-    }
+    return {"near_name": nearest[1], "near_price": nearest[0]}
 
 
 def build_option(smart_api, opts_df, strike, opt_type, moneyness, greeks_map):
@@ -291,17 +294,15 @@ def build_option(smart_api, opts_df, strike, opt_type, moneyness, greeks_map):
     time.sleep(0.4)
     odf = fetch_recent_data(smart_api, row["token"])
     levels = calculate_volume_profile(odf)
-    lt = option_levels_and_target(levels)
+    nz = option_nearest_zone(levels)
     greek = get_greek(greeks_map, strike, opt_type)
 
     return {
         "type": opt_type, "moneyness": moneyness, "symbol": row["symbol"], "strike": strike,
         "ltp": levels["ltp"] if levels else None,
         "delta": greek.get("delta"), "theta": greek.get("theta"),
-        "near_name": lt["near_name"] if lt else None,
-        "near_price": lt["near_price"] if lt else None,
-        "sl": lt["sl"] if lt else None,
-        "target": lt["target"] if lt else None,
+        "near_name": nz["near_name"] if nz else None,
+        "near_price": nz["near_price"] if nz else None,
     }
 
 
@@ -322,6 +323,7 @@ def main():
 
         lo, hi = rng["low"], rng["high"]
         entry["prev_day"] = rng
+        entry["levels"] = full_ladder(lo, hi)
         entry["close_signal"] = nearest_bias(rng["close"], lo, hi)
 
         time.sleep(0.4)
