@@ -136,9 +136,13 @@ def fetch_opening_candle(smart_api, token):
 
 def calculate_volume_profile(df):
     if df.empty:
+        print("VP debug: dataframe khali chhe")
         return None
     price_min, price_max = df["low"].min(), df["high"].max()
+    total_vol_check = df["volume"].sum()
+    print(f"VP debug: price_min={price_min} price_max={price_max} total_volume={total_vol_check}")
     if price_max <= price_min:
+        print("VP debug: price_max <= price_min, fail")
         return None
 
     tick = 0.05
@@ -166,6 +170,7 @@ def calculate_volume_profile(df):
 
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     total_volume = bin_volumes.sum()
+    print(f"VP debug: bin_volumes total={total_volume}")
     if total_volume == 0:
         return None
 
