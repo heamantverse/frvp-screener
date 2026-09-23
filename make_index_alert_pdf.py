@@ -48,13 +48,16 @@ action_color = {"CALL": colors.HexColor("#15803d"), "PUT": colors.HexColor("#b91
 def sig_block(title, sig):
     if not sig:
         return [Paragraph(f"{title}: data na malyu", styles["Normal"])]
-    c = action_color.get(sig["action"], colors.black)
+    action = sig.get("action")
+    c = action_color.get(action, colors.black)
     lines = [
-        Paragraph(f"<b>{title}</b>: nearest {sig['ratio']} ({sig['label']}) @ {sig['level_price']}", styles["Normal"]),
-        Paragraph(f'<font color="{c.hexval()}"><b>{sig["action"]}</b></font>', styles["Normal"]),
+        Paragraph(f"<b>{title}</b>: nearest {sig.get('ratio')} ({sig.get('label')}) @ {sig.get('level_price')}", styles["Normal"]),
+        Paragraph(f'<font color="{c.hexval()}"><b>{action}</b></font>', styles["Normal"]),
     ]
-    if sig["sl"] is not None:
-        lines.append(Paragraph(f"Index SL: {sig['sl']}   Index Target: {sig['tp']}", styles["Normal"]))
+    sl = sig.get("sl")
+    tp = sig.get("tp")
+    if sl is not None:
+        lines.append(Paragraph(f"Index SL: {sl}   Index Target: {tp}", styles["Normal"]))
     else:
         lines.append(Paragraph("Confirmation ni wait karo (stall zone)", styles["Normal"]))
     return lines
