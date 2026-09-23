@@ -111,9 +111,9 @@ def fetch_opening_candle(smart_api, token):
         "symboltoken": token,
         "interval": INTERVAL,
         "fromdate": today.strftime("%Y-%m-%d 09:15"),
-        "todate": today.strftime("%Y-%m-%d 09:25"),
+        "todate": today.strftime("%Y-%m-%d 09:30"),
     }
-    for attempt in range(5):
+    for attempt in range(8):
         try:
             resp = smart_api.getCandleData(params)
             if resp.get("status") and resp.get("data"):
@@ -130,7 +130,7 @@ def fetch_opening_candle(smart_api, token):
                 print(f"Attempt {attempt+1}: {resp}")
         except Exception as e:
             print(f"Attempt {attempt+1} error: {e}")
-        time.sleep(2)
+        time.sleep(3)
     print("Failed to fetch opening candle")
     return None
 
