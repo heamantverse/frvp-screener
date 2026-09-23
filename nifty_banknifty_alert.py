@@ -15,6 +15,7 @@ import pyotp
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from SmartApi import SmartConnect
+from SmartApi.smartExceptions import DataException
 
 API_KEY = os.environ["ANGEL_API_KEY"]
 CLIENT_CODE = os.environ["ANGEL_CLIENT_ID"]
@@ -53,6 +54,37 @@ FIB_RATIOS_NAMED = [
 OUT_FILE = "index_alert.json"
 
 
+# ============================================================
+# RATE-LIMIT SAFE WRAPPER
+# Angel One SmartAPI historical/candle endpoints have a strict
+# per-second/per-minute cap. Jo tame consecutive calls faster
+# thi kariye to "Access denied because of exceeding access rate"
+# error aave chhe. Aa wrapper e error par automatic retry +
+# increasing wait karse.
+# ============================================================
+
+def safe_call(fn, *args, retries=5, base_delay=3, label="", **kwargs):
+    """Call any smart_api function with retry + backoff on rate-limit errors."""
+    for attempt in range(1, retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except DataException as e:
+            msg = str(e)
+            if "exceeding access rate" in msg and attempt < retries:
+                wait = base_delay * attempt  # 3s, 6s, 9s, 12s...
+                print(f"[rate-limit] {label} attempt {attempt}/{retries} failed, retrying in {wait}s")
+                time.sleep(wait)
+            else:
+                raise
+        except Exception as e:
+            if attempt < retries:
+                wait = base_delay * attempt
+                print(f"[retry] {label} attempt {attempt}/{retries} error: {e}, retrying in {wait}s")
+                time.sleep(wait)
+            else:
+                raise
+
+
 def login():
     smart_api = SmartConnect(api_key=API_KEY)
     totp = pyotp.TOTP(TOTP_SECRET).now()
@@ -77,11 +109,15 @@ def full_ladder(lo, hi):
 def prev_day_range(smart_api, token):
     end = datetime.now()
     start = end - timedelta(days=10)
-    resp = smart_api.getCandleData({
-        "exchange": "NSE", "symboltoken": token, "interval": "ONE_DAY",
-        "fromdate": start.strftime("%Y-%m-%d 09:15"),
-        "todate": end.strftime("%Y-%m-%d 15:30"),
-    })
+    resp = safe_call(
+        smart_api.getCandleData,
+        {
+            "exchange": "NSE", "symboltoken": token, "interval": "ONE_DAY",
+            "fromdate": start.strftime("%Y-%m-%d 09:15"),
+            "todate": end.strftime("%Y-%m-%d 15:30"),
+        },
+        label=f"prev_day_range({token})",
+    )
     rows = resp.get("data") or []
     if not rows:
         return None
@@ -91,7 +127,7 @@ def prev_day_range(smart_api, token):
 
 def get_ltp(smart_api, token, name, exchange="NSE"):
     try:
-        resp = smart_api.ltpData(exchange, name, token)
+        resp = safe_call(smart_api.ltpData, exchange, name, token, label=f"ltp({name})")
         if resp.get("status") and resp.get("data"):
             return float(resp["data"]["ltp"])
     except Exception as e:
@@ -128,7 +164,7 @@ def get_expiry_options(master_df, name):
     if opts.empty:
         return None, None
 
-    opts["expiry_dt"] = pd.to_datetime(opts["expiry"], errors="coerce")
+    opts["expiry_dt"] = pd.to_datetime(opts["expiry"], format="%d%b%Y", errors="coerce")
     opts = opts.dropna(subset=["expiry_dt"])
     today = pd.Timestamp.now().normalize()
     upcoming = opts[opts["expiry_dt"] >= today]
@@ -163,7 +199,11 @@ def find_row(opts_df, strike, opt_type):
 def fetch_greeks(smart_api, opt_name, expiry_dt):
     try:
         expiry_str = expiry_dt.strftime("%d%b%Y").upper()
-        resp = smart_api.optionGreek({"name": opt_name, "expirydate": expiry_str})
+        resp = safe_call(
+            smart_api.optionGreek,
+            {"name": opt_name, "expirydate": expiry_str},
+            label=f"greeks({opt_name})",
+        )
         rows = resp.get("data") or []
         print(f"[DEBUG] greeks for {opt_name}: status={resp.get('status')} rows={len(rows)} sample={rows[:1]}")
         out = {}
@@ -197,11 +237,15 @@ def get_greek(greeks_map, strike, opt_type):
 def fetch_recent_data(smart_api, token, days=5, interval="FIFTEEN_MINUTE"):
     end = datetime.now()
     start = end - timedelta(days=days)
-    resp = smart_api.getCandleData({
-        "exchange": "NFO", "symboltoken": token, "interval": interval,
-        "fromdate": start.strftime("%Y-%m-%d 09:15"),
-        "todate": end.strftime("%Y-%m-%d 15:30"),
-    })
+    resp = safe_call(
+        smart_api.getCandleData,
+        {
+            "exchange": "NFO", "symboltoken": token, "interval": interval,
+            "fromdate": start.strftime("%Y-%m-%d 09:15"),
+            "todate": end.strftime("%Y-%m-%d 15:30"),
+        },
+        label=f"recent_data({token})",
+    )
     rows = resp.get("data") or []
     if not rows:
         return pd.DataFrame()
@@ -291,7 +335,7 @@ def build_option(smart_api, opts_df, strike, opt_type, moneyness, greeks_map):
     if not row:
         return {"type": opt_type, "moneyness": moneyness, "strike": strike, "error": "strike na malyo"}
 
-    time.sleep(0.4)
+    time.sleep(1)
     odf = fetch_recent_data(smart_api, row["token"])
     levels = calculate_volume_profile(odf)
     nz = option_nearest_zone(levels)
@@ -326,7 +370,7 @@ def main():
         entry["levels"] = full_ladder(lo, hi)
         entry["close_signal"] = nearest_bias(rng["close"], lo, hi)
 
-        time.sleep(0.4)
+        time.sleep(1)
         ltp = get_ltp(smart_api, idx["token"], idx["name"])
         entry["ltp"] = ltp
         entry["today_signal"] = nearest_bias(ltp, lo, hi) if ltp else None
@@ -345,6 +389,8 @@ def main():
             entry["is_expiry_day"] = (expiry_dt.date() == today_ist)
 
             atm, itm_ce, itm_pe = pick_strikes(opts_df, spot)
+
+            time.sleep(1)
             greeks_map = fetch_greeks(smart_api, idx["opt_name"], expiry_dt)
 
             for strike, opt_type, money in [
@@ -359,7 +405,7 @@ def main():
             entry["option_error"] = entry.get("option_error", "options na malya")
 
         result["indexes"].append(entry)
-        time.sleep(0.4)
+        time.sleep(1.5)
 
     with open(OUT_FILE, "w") as f:
         json.dump(result, f, indent=2)
