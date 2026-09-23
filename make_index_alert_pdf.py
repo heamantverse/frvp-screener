@@ -1,13 +1,16 @@
 import json
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
 with open("index_alert.json") as f:
     data = json.load(f)
 
 styles = getSampleStyleSheet()
+small = ParagraphStyle("small", parent=styles["Normal"], fontSize=7.5, leading=9)
+small_white = ParagraphStyle("small_white", parent=small, textColor=colors.white)
+
 story = [
     Paragraph("Pre-market Index Options", styles["Title"]),
     Paragraph("Generated: " + data["generated_at"][:16].replace("T", " ") + " IST", styles["Normal"]),
@@ -19,6 +22,10 @@ action_color = {"CALL": "#15803d", "PUT": "#b91c1c", "WATCH": "#b45309"}
 
 def cell(v, suffix=""):
     return "—" if v is None else f"{v}{suffix}"
+
+
+def p(text, style=small):
+    return Paragraph(str(text), style)
 
 
 for idx in data["indexes"]:
@@ -52,32 +59,54 @@ for idx in data["indexes"]:
             '<font color="#b91c1c"><b>⚠ Aaje EXPIRY DAY chhe — theta decay bahu zadpathi thashe, '
             'tight target-SL rakho.</b></font>', styles["Normal"]))
 
+    # ---- Index's own level ladder ----
+    levels = idx.get("levels") or []
+    if levels:
+        levels_sorted = sorted(levels, key=lambda x: x["price"], reverse=True)
+        half = (len(levels_sorted) + 1) // 2
+        left, right = levels_sorted[:half], levels_sorted[half:]
+        rows = [[p("Zone", small_white), p("Price", small_white), p("Zone", small_white), p("Price", small_white)]]
+        for i in range(max(len(left), len(right))):
+            l = left[i] if i < len(left) else {"name": "", "price": ""}
+            r = right[i] if i < len(right) else {"name": "", "price": ""}
+            rows.append([p(l["name"]), p(l["price"]), p(r["name"]), p(r["price"])])
+
+        lvl_table = Table(rows, colWidths=[95, 45, 95, 45], repeatRows=1)
+        lvl_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f3f4f6")]),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(Spacer(1, 4))
+        story.append(lvl_table)
+
+    # ---- Option table ----
     opts = idx.get("options") or []
     if opts:
-        header = ["Type", "Strike", "Symbol", "LTP", "Delta", "Theta", "Near Zone", "SL", "Target"]
+        header = [p(h, small_white) for h in ["Type", "Strike", "Symbol", "LTP", "Delta", "Theta", "Near Zone", "SL", "Target"]]
         rows = [header]
         for o in opts:
             if o.get("error"):
-                rows.append([f"{o['type']} {o['moneyness']}", cell(o.get("strike")), "—", "—", "—", "—", o["error"], "—", "—"])
+                rows.append([p(f"{o['type']} {o['moneyness']}"), p(cell(o.get("strike"))),
+                             p("—"), p("—"), p("—"), p("—"), p(o["error"]), p("—"), p("—")])
                 continue
             rows.append([
-                f"{o['type']} {o['moneyness']}", cell(o.get("strike")), o.get("symbol", "—"),
-                cell(o.get("ltp")), cell(o.get("delta")), cell(o.get("theta")),
-                f"{o.get('near_name') or '—'} @ {cell(o.get('near_price'))}",
-                cell(o.get("sl")), cell(o.get("target")),
+                p(f"{o['type']} {o['moneyness']}"), p(cell(o.get("strike"))), p(o.get("symbol", "—")),
+                p(cell(o.get("ltp"))), p(cell(o.get("delta"))), p(cell(o.get("theta"))),
+                p(f"{o.get('near_name') or '—'} @ {cell(o.get('near_price'))}"),
+                p(cell(o.get("sl"))), p(cell(o.get("target"))),
             ])
 
-        table = Table(rows, repeatRows=1)
-        style = [
+        opt_table = Table(rows, colWidths=[45, 40, 95, 40, 35, 35, 100, 40, 40], repeatRows=1)
+        opt_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
             ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f3f4f6")]),
-        ]
-        table.setStyle(TableStyle(style))
-        story.append(Spacer(1, 4))
-        story.append(table)
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(Spacer(1, 6))
+        story.append(opt_table)
     else:
         story.append(Paragraph(idx.get("option_error", "Options na malya"), styles["Normal"]))
 
