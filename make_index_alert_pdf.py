@@ -25,6 +25,14 @@ small_normal = ParagraphStyle(
     leading=10,
 )
 
+zone_style = ParagraphStyle(
+    "zone_style",
+    parent=styles["Normal"],
+    fontSize=9,
+    leading=12,
+    textColor=colors.HexColor("#7c2d12"),
+)
+
 
 def p(text, style=None):
     """Wrap text in a Paragraph, default to small_normal style."""
@@ -34,6 +42,25 @@ def p(text, style=None):
 def cell(val):
     """Format a table cell value, showing em-dash for missing data."""
     return "—" if val is None else str(val)
+
+
+def zone_lines(zone):
+    """zone = {"notes": [...], "predictions": [...]} -> list of Paragraphs for PDF body."""
+    if not zone or not zone.get("notes"):
+        return []
+    out = []
+    for note, pred in zip(zone["notes"], zone["predictions"]):
+        out.append(Paragraph(f"⚡ <b>{note}</b> — {pred}", zone_style))
+    return out
+
+
+def zone_cell_text(zone):
+    """zone -> compact string for table cell (Notes / Prediction columns)."""
+    if not zone or not zone.get("notes"):
+        return "—", "—"
+    notes = "; ".join(zone["notes"])
+    preds = "; ".join(zone["predictions"])
+    return notes, preds
 
 
 story = [
@@ -77,23 +104,36 @@ for idx in data["indexes"]:
         story.append(Spacer(1, 4))
         story += sig_block(f"Aaje bhav ({idx['ltp']})", idx["today_signal"])
 
+        # ---- Zone analysis (pattern-based notes + prediction) for index ----
+        zlines = zone_lines(idx.get("today_zone"))
+        if zlines:
+            story.append(Spacer(1, 4))
+            story.append(Paragraph("Zone Analysis:", styles["Normal"]))
+            story += zlines
+
     # ---- Option table ----
     opts = idx.get("options") or []
     if opts:
-        header = [p(h, small_white) for h in ["Type", "Strike", "Symbol", "LTP", "Delta", "Theta", "Near Zone"]]
+        header = [p(h, small_white) for h in
+                   ["Type", "Strike", "Symbol", "LTP", "Delta", "Theta", "Near Zone", "Zone Notes", "Prediction"]]
         rows = [header]
         for o in opts:
             if o.get("error"):
                 rows.append([p(f"{o['type']} {o['moneyness']}"), p(cell(o.get("strike"))),
-                             p("—"), p("—"), p("—"), p("—"), p(o["error"])])
+                             p("—"), p("—"), p("—"), p("—"), p(o["error"]), p("—"), p("—")])
                 continue
+            notes_txt, pred_txt = zone_cell_text({
+                "notes": o.get("zone_notes") or [],
+                "predictions": o.get("zone_prediction") or [],
+            })
             rows.append([
                 p(f"{o['type']} {o['moneyness']}"), p(cell(o.get("strike"))), p(o.get("symbol", "—")),
                 p(cell(o.get("ltp"))), p(cell(o.get("delta"))), p(cell(o.get("theta"))),
                 p(f"{o.get('near_name') or '—'} @ {cell(o.get('near_price'))}"),
+                p(notes_txt), p(pred_txt),
             ])
 
-        opt_table = Table(rows, colWidths=[45, 40, 100, 40, 40, 40, 130], repeatRows=1)
+        opt_table = Table(rows, colWidths=[38, 32, 80, 28, 28, 28, 90, 80, 95], repeatRows=1)
         opt_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
             ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
