@@ -23,7 +23,7 @@ jobs:
         run: |
           pip install numpy pandas requests pyotp smartapi-python logzero websocket-client
 
-            - name: Run Fib Open Alert
+      - name: Run Fib Open Alert
         env:
           ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
           ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
