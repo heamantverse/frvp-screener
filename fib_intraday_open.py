@@ -1,8 +1,8 @@
 """
 Intraday Fib Open Alert – Nifty + BankNifty + Sensex
-Manual VLOW/VHIGH (Telegram → PythonAnywhere) vapre, nahi to previous day
-High-Low range parthi Fib levels banave (index candles ma volume 0 hoy
-chhe, etle volume-profile na badle sidhi high-low range vaparay chhe)
+Fakt e instrument process thay je nu manual VLOW/VHIGH Telegram par
+moklyu hoy (website/Telegram → PythonAnywhere). Jena manual levels
+nathi e instrument skip thai jay — auto previous-day fallback nathi.
 Level names VRSuccessful indicator jeva j (website na FIB_RATIOS_NAMED
 sathe match thay che)
 Alert within ~5 mins of market open
@@ -10,7 +10,6 @@ Alert within ~5 mins of market open
 
 import os
 import time
-import pandas as pd
 import requests
 import pyotp
 from datetime import datetime, timedelta
@@ -82,7 +81,7 @@ def send_telegram(message: str):
 
 def fetch_manual_levels():
     """PythonAnywhere (website/Telegram) par save thayela VLOW/VHIGH levie.
-    Failure/missing config hoy to khali dict pachu ave (auto range fallback thashe)."""
+    Failure/missing config hoy to khali dict pachu ave (koi instrument process nahi thay)."""
     if not WEBSITE_URL or not FIB_API_SECRET:
         print("Manual levels: WEBSITE_URL / FIB_API_SECRET set nathi, skipping")
         return {}
@@ -97,38 +96,6 @@ def fetch_manual_levels():
     except Exception as e:
         print(f"Manual levels fetch error: {e}")
     return {}
-
-def get_previous_trading_day():
-    today = datetime.now(IST).date()
-    prev = today - timedelta(days=1)
-    while prev.weekday() >= 5:
-        prev -= timedelta(days=1)
-    return prev
-
-def fetch_previous_day_5min(smart_api, token, exchange, day):
-    print(f"Fetching previous day data for token {token} ({exchange}) | {day}")
-    params = {
-        "exchange": exchange,
-        "symboltoken": token,
-        "interval": INTERVAL,
-        "fromdate": day.strftime("%Y-%m-%d 09:15"),
-        "todate": day.strftime("%Y-%m-%d 15:30"),
-    }
-    for attempt in range(3):
-        try:
-            resp = smart_api.getCandleData(params)
-            if resp.get("status") and resp.get("data"):
-                df = pd.DataFrame(resp["data"], columns=["timestamp", "open", "high", "low", "close", "volume"])
-                df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
-                print(f"Got {len(df)} candles")
-                return df
-            else:
-                print(f"Attempt {attempt+1}: No data in response → {resp}")
-        except Exception as e:
-            print(f"Attempt {attempt+1} error: {e}")
-        time.sleep(1.5)
-    print("Failed to fetch previous day data")
-    return pd.DataFrame()
 
 def fetch_opening_candle(smart_api, token, exchange):
     print(f"Fetching today's opening candle for token {token} ({exchange})")
@@ -160,19 +127,6 @@ def fetch_opening_candle(smart_api, token, exchange):
         time.sleep(3)
     print("Failed to fetch opening candle")
     return None
-
-def range_from_prev_day(df):
-    """Index candles ma volume 0 hoy chhe, etle high-low range j vaparay chhe."""
-    if df.empty:
-        print("Range debug: dataframe khali chhe")
-        return None
-    price_min = float(df["low"].min())
-    price_max = float(df["high"].max())
-    print(f"Range debug: low={price_min} high={price_max}")
-    if price_max <= price_min:
-        print("Range debug: high <= low, fail")
-        return None
-    return {"VLOW": round(price_min, 2), "VHIGH": round(price_max, 2)}
 
 def calculate_fib_levels(vlow, vhigh):
     """Actual precise calculation — round figures nahi, 2 decimal j."""
@@ -234,28 +188,13 @@ def analyze(candle, fib_levels, mid):
         "prediction": prediction,
     }
 
-def process_index(smart_api, name, token, exchange, prev_day, manual_levels):
+def process_index(smart_api, name, token, exchange, manual):
     print(f"\n----- Processing {name} -----")
 
-    manual = manual_levels.get(name)
-    if manual:
-        vlow = float(manual["val"])
-        vhigh = float(manual["vah"])
-        source = "Manual"
-        print(f"{name}: Using MANUAL levels → VLOW:{vlow} VHIGH:{vhigh} "
-              f"(source={manual.get('source')}, updated={manual.get('updated')})")
-    else:
-        df = fetch_previous_day_5min(smart_api, token, exchange, prev_day)
-        if df.empty:
-            print(f"{name}: Previous day data empty")
-            return None
-        vp = range_from_prev_day(df)
-        if vp is None:
-            print(f"{name}: Range calc failed")
-            return None
-        vlow, vhigh = vp["VLOW"], vp["VHIGH"]
-        source = "Auto"
-        print(f"{name} Auto Range → VLOW:{vlow} VHIGH:{vhigh}")
+    vlow = float(manual["val"])
+    vhigh = float(manual["vah"])
+    print(f"{name}: Using MANUAL levels → VLOW:{vlow} VHIGH:{vhigh} "
+          f"(source={manual.get('source')}, updated={manual.get('updated')})")
 
     fib_levels = calculate_fib_levels(vlow, vhigh)
     mid = get_level(fib_levels, 0.5)["price"]  # Mid Zone j POC nu kaam kare che
@@ -274,7 +213,6 @@ def process_index(smart_api, name, token, exchange, prev_day, manual_levels):
         "low": candle["low"],
         "vlow": vlow,
         "vhigh": vhigh,
-        "source": source,
         "fib_levels": fib_levels,
         **analysis,
     }
@@ -283,15 +221,21 @@ def main():
     now = datetime.now(IST)
     print(f"Current time: {now}")
 
-    smart_api = login()
-    prev_day = get_previous_trading_day()
-    print(f"Previous trading day: {prev_day}")
-
     manual_levels = fetch_manual_levels()
 
+    # Fakt e instruments je na manual levels save thayela hoy
+    to_process = [inst for inst in INSTRUMENTS if inst["name"] in manual_levels]
+
+    if not to_process:
+        print("Koi instrument nu manual VLOW/VHIGH nathi malyu, alert skip")
+        send_telegram("ℹ️ Fib Open Alert: Aaje koi instrument nu manual VLOW/VHIGH moklyu nathi, etle alert skip thai.")
+        return
+
+    smart_api = login()
+
     results = []
-    for inst in INSTRUMENTS:
-        res = process_index(smart_api, inst["name"], inst["token"], inst["exchange"], prev_day, manual_levels)
+    for inst in to_process:
+        res = process_index(smart_api, inst["name"], inst["token"], inst["exchange"], manual_levels[inst["name"]])
         if res:
             results.append(res)
 
@@ -300,10 +244,10 @@ def main():
         print("No results")
         return
 
-    lines = [f"<b>📊 Fib Open Alert</b>\n{now.strftime('%d-%b %H:%M')} IST\nPrev Day: {prev_day}\n"]
+    lines = [f"<b>📊 Fib Open Alert</b>\n{now.strftime('%d-%b %H:%M')} IST\n"]
 
     for r in results:
-        lines.append(f"<b>{r['name']}</b> [{r['source']}]")
+        lines.append(f"<b>{r['name']}</b>")
         lines.append(f"O: <b>{r['open']}</b> | H: {r['high']} | L: {r['low']}")
         lines.append(f"Bias: {r['bias']}")
         lines.append("Notes: " + " | ".join(r["notes"]))
