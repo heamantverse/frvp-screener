@@ -31,4 +31,5 @@ jobs:
           ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WEBSITE_URL: ${{ secrets.WEBSITE_URL }} FIB_API_SECRET: ${{ secrets.FIB_API_SECRET }} Indentation (spaces) baki badhi lines jetlu j rakhjo — YAML
         run: python fib_intraday_open.py
