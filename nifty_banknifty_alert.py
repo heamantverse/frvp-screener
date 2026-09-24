@@ -3,6 +3,11 @@ Pre-market Nifty & BankNifty options table.
 Har index mate CE-ATM, CE-ITM, PE-ATM, PE-ITM — chaare options no potano
 data (POC/VAH/VAL, named levels) ane Greeks (delta/theta). Index no potano
 badho named level ladder pan generate thay chhe.
+
+Zone analysis: price key fib levels (0, 0.236, 0.618, 1.0, 1.272, 1.618,
+-0.618, -1.618) ni tolerance range ma aave to chart-observed pattern
+pramane note + prediction generate thay chhe (index level ane dareek
+option level banne mate).
 """
 
 import os
@@ -50,6 +55,52 @@ FIB_RATIOS_NAMED = [
     (-0.272, "Day Low Zone"),
     (-1.618, "Extreme Zone"),
 ]
+
+# ------------------------------------------------------------
+# ZONE ANALYSIS — chart par observe thayela patterns
+# (20 historical Sensex charts par manually dorela fib levels
+#  parthi kadhela behavior, dareek ratio mate note + prediction)
+# ------------------------------------------------------------
+
+TOLERANCE_PCT = 0.20  # intraday script jetlu j
+
+ZONE_NOTES = {
+    1.618:  ("GOLDEN REVERSAL / Extension", "Exhaustion zone — high reversal chance"),
+    1.272:  ("STALL ZONE", "Decision zone — breakout continuation or rejection pullback"),
+    1.000:  ("BASE MOVE (top)", "Range extreme — directional move expected"),
+    0.618:  ("GOLDEN REVERSAL", "Strong reaction zone — possible pause/reversal"),
+    0.236:  ("EARLY REVERSAL", "Minor pullback/bounce zone"),
+    0.000:  ("BASE MOVE (bottom)", "Fresh impulsive move origin"),
+    -0.618: ("BOUNCE BACK", "Support zone — bounce back likely"),
+    -1.618: ("IMPULSIVE TARGET", "Extreme support/target zone"),
+}
+
+
+def zone_analysis(price, lo, hi, tolerance_pct=TOLERANCE_PCT):
+    """Price ne dareek key fib level sathe compare kari, tolerance ni andar
+    hoy to chart-pattern pramane note + prediction pacho aape.
+    lo/hi = jena par se fib ladder banyu chhe (index prev-day range athva
+    option nu potanu VAL/VAH)."""
+    if price is None:
+        return {"notes": [], "predictions": []}
+    rng = hi - lo
+    if rng <= 0:
+        return {"notes": [], "predictions": []}
+
+    tol = price * (tolerance_pct / 100)
+    notes, predictions = [], []
+    for ratio, (label, prediction) in ZONE_NOTES.items():
+        lvl_price = lo + rng * ratio
+        if abs(price - lvl_price) <= tol:
+            notes.append(f"{label} ({round(lvl_price, 2)})")
+            predictions.append(prediction)
+
+    if not notes:
+        notes.append("No major Fib confluence")
+        predictions.append("Wait for clearer reaction at key levels")
+
+    return {"notes": notes, "predictions": predictions}
+
 
 OUT_FILE = "index_alert.json"
 
@@ -347,12 +398,26 @@ def build_option(smart_api, opts_df, strike, opt_type, moneyness, greeks_map):
     nz = option_nearest_zone(levels)
     greek = get_greek(greeks_map, strike, opt_type)
 
+    # Live LTP try karo, na male to last candle close par fallback
+    # (pre-market run vakhte options market khulyu nathi hotu, etle
+    #  live LTP na male e normal chhe — tyare last close j sachu che)
+    time.sleep(1)
+    live_ltp = get_ltp(smart_api, row["token"], row["symbol"], exchange="NFO")
+    candle_ltp = levels["ltp"] if levels else None
+    ltp = live_ltp if live_ltp is not None else candle_ltp
+    ltp_source = "live" if live_ltp is not None else "last_candle_close"
+
+    zone = zone_analysis(ltp, levels["val"], levels["vah"]) if (levels and ltp) else {"notes": [], "predictions": []}
+
     return {
         "type": opt_type, "moneyness": moneyness, "symbol": row["symbol"], "strike": strike,
-        "ltp": levels["ltp"] if levels else None,
+        "ltp": ltp,
+        "ltp_source": ltp_source,
         "delta": greek.get("delta"), "theta": greek.get("theta"),
         "near_name": nz["near_name"] if nz else None,
         "near_price": nz["near_price"] if nz else None,
+        "zone_notes": zone["notes"],
+        "zone_prediction": zone["predictions"],
     }
 
 
@@ -381,6 +446,9 @@ def main():
         ltp = get_ltp(smart_api, idx["token"], idx["name"])
         entry["ltp"] = ltp
         entry["today_signal"] = nearest_bias(ltp, lo, hi) if ltp else None
+
+        # Index level zone analysis (live LTP che, etle direct vapri sakay)
+        entry["today_zone"] = zone_analysis(ltp, lo, hi) if ltp else {"notes": [], "predictions": []}
 
         spot = ltp or rng["close"]
 
