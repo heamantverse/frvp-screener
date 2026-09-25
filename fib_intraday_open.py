@@ -221,13 +221,20 @@ def main():
     now = datetime.now(IST)
     print(f"Current time: {now}")
 
-    manual_levels = fetch_manual_levels()
+    manual_levels_raw = fetch_manual_levels()
 
-    # Fakt e instruments je na manual levels save thayela hoy
+    # Sirf INTRADAY type j vaparay — WEEK52 sirf website par vaparay che
+    manual_levels = {
+        name: data["INTRADAY"]
+        for name, data in manual_levels_raw.items()
+        if "INTRADAY" in data
+    }
+
+    # Fakt e instruments je na manual INTRADAY levels save thayela hoy
     to_process = [inst for inst in INSTRUMENTS if inst["name"] in manual_levels]
 
     if not to_process:
-        print("Koi instrument nu manual VLOW/VHIGH nathi malyu, alert skip")
+        print("Koi instrument nu manual INTRADAY VLOW/VHIGH nathi malyu, alert skip")
         send_telegram("ℹ️ Fib Open Alert: Aaje koi instrument nu manual VLOW/VHIGH moklyu nathi, etle alert skip thai.")
         return
 
