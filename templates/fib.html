@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="gu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scopevision — Levels</title>
+<style>
+  :root {
+    --text: #eef1ff;
+    --muted: #a9b1d6;
+    --glass: rgba(255,255,255,0.07);
+    --glass-border: rgba(255,255,255,0.14);
+    --bull: #34e39b;
+    --bear: #ff6b7d;
+    --watch: #ffc857;
+    --accent: #7c9cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh;
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+    background: #0a0d1f;
+    padding: 28px 16px 70px;
+    position: relative;
+    overflow-x: hidden;
+  }
+  body::before, body::after, .blob {
+    content: "";
+    position: fixed;
+    z-index: 0;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+  body::before { width: 520px; height: 520px; background: #5b3df5; top: -140px; left: -120px; filter: blur(95px); opacity: .55; }
+  body::after { width: 560px; height: 560px; background: #00c2ff; bottom: -180px; right: -140px; filter: blur(100px); opacity: .35; }
+  .blob { width: 420px; height: 420px; background: #ff4fa3; top: 38%; left: 55%; filter: blur(110px); opacity: .28; }
+
+  .wrap { position: relative; z-index: 1; max-width: 680px; margin: 0 auto; }
+  .glass {
+    background: var(--glass);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--glass-border);
+    border-radius: 18px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.35);
+  }
+
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 10px; margin-bottom: 18px;
+  }
+  h1 {
+    margin: 0; font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em;
+    background: linear-gradient(90deg, #ffffff, #9fb4ff 55%, #7be7ff);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  a.back { color: var(--muted); text-decoration: none; font-size: .85rem; }
+  a.back:hover { color: #fff; }
+
+  .card { padding: 22px; margin-bottom: 18px; }
+
+  .instrument-tabs { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .itab {
+    padding: 8px 16px; border-radius: 999px; cursor: pointer; font-size: .85rem; font-weight: 600;
+    color: var(--muted); background: var(--glass); border: 1px solid var(--glass-border);
+    text-decoration: none;
+  }
+  .itab.active { color: #0a0d1f; background: #fff; border-color: #fff; }
+
+  .type-tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .ttab {
+    padding: 6px 14px; border-radius: 999px; cursor: pointer; font-size: .78rem; font-weight: 600;
+    color: var(--muted); background: transparent; border: 1px solid var(--glass-border);
+    text-decoration: none;
+  }
+  .ttab.active { color: #0a0d1f; background: var(--accent); border-color: var(--accent); }
+
+  form { display: flex; flex-direction: column; gap: 14px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .field { flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 6px; }
+  label { font-size: .78rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  input[type="number"] {
+    padding: 12px 14px; border-radius: 12px; font-size: 1rem;
+    color: var(--text); background: rgba(255,255,255,0.06); border: 1px solid var(--glass-border);
+  }
+  input[type="number"]:focus { outline: none; border-color: var(--accent); }
+  input[type="number"]::placeholder { color: var(--muted); }
+
+  button {
+    padding: 12px 18px; border-radius: 999px; font-size: .95rem; font-weight: 700;
+    color: #0a0d1f; background: linear-gradient(90deg, #fff, #9fb4ff); border: none; cursor: pointer;
+  }
+  button:hover { opacity: .92; }
+
+  .msg { padding: 10px 14px; border-radius: 10px; font-size: .85rem; margin-top: -4px; }
+  .msg.error { background: rgba(255,107,125,.14); color: var(--bear); }
+  .msg.ok { background: rgba(52,227,155,.14); color: var(--bull); }
+
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  thead th {
+    text-align: left; padding: 10px 8px; font-weight: 600; color: var(--muted);
+    font-size: .72rem; letter-spacing: .05em; text-transform: uppercase;
+    border-bottom: 1px solid var(--glass-border);
+  }
+  tbody td {
+    padding: 10px 8px; border-bottom: 1px solid rgba(255,255,255,0.06);
+    font-variant-numeric: tabular-nums;
+  }
+  tbody tr:hover { background: rgba(255,255,255,0.05); }
+  .price { font-weight: 700; color: #fff; }
+  .meta { color: var(--muted); font-size: .82rem; margin: 0 0 12px; line-height: 1.6; }
+  .meta b { color: #fff; }
+</style>
+</head>
+<body>
+<div class="blob"></div>
+<div class="wrap">
+  <header>
+    <h1>Manual Levels</h1>
+    <a class="back" href="/">← Screener par pacha</a>
+  </header>
+
+  <div class="instrument-tabs">
+    {% for inst in instruments %}
+      <a class="itab {{ 'active' if inst == instrument else '' }}" href="/fib?instrument={{ inst }}&amp;type={{ level_type }}">{{ inst }}</a>
+    {% endfor %}
+  </div>
+
+  <div class="type-tabs">
+    {% for t in level_types %}
+      <a class="ttab {{ 'active' if t == level_type else '' }}" href="/fib?instrument={{ instrument }}&amp;type={{ t }}">{{ t }}</a>
+    {% endfor %}
+  </div>
+
+  <div class="card glass">
+    <form method="POST" action="/fib">
+      <input type="hidden" name="instrument" value="{{ instrument }}">
+      <input type="hidden" name="type" value="{{ level_type }}">
+      <div class="row">
+        <div class="field">
+          <label for="val">VLOW</label>
+          <input type="number" step="0.01" name="val" id="val" placeholder="dat. 76,484.86" value="{{ val if val is not none else '' }}" required>
+        </div>
+        <div class="field">
+          <label for="vah">VHIGH</label>
+          <input type="number" step="0.01" name="vah" id="vah" placeholder="dat. 78,740.12" value="{{ vah if vah is not none else '' }}" required>
+        </div>
+      </div>
+      <button type="submit">{{ instrument }} {{ level_type }} Levels Check Karo</button>
+    </form>
+
+    {% if error %}
+      <div class="msg error">{{ error }}</div>
+    {% endif %}
+    {% if levels and sent is not none %}
+      <div class="msg {{ 'ok' if sent else 'error' }}">
+        {% if sent %}Telegram par moklaayu ✅{% else %}Telegram par nathi moklaayu (bot/chat id check karo){% endif %}
+      </div>
+    {% endif %}
+  </div>
+
+  {% if levels %}
+  <div class="card glass">
+    <p class="meta">
+      {{ instrument }} ({{ level_type }}) — Chhella levels &mdash; VLOW: <b>{{ val }}</b> &nbsp;|&nbsp; VHIGH: <b>{{ vah }}</b>
+      {% if updated %}<br>{{ updated }}{% if source %} &middot; {{ source }} thi{% endif %}{% endif %}
+    </p>
+    <table>
+      <thead><tr><th class="left">Level</th><th>Price</th></tr></thead>
+      <tbody>
+        {% for lvl in levels %}
+        <tr>
+          <td>{{ lvl.name }}</td>
+          <td class="price">{{ lvl.price }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+</body>
+</html>
