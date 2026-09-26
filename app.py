@@ -4,8 +4,10 @@ import json
 import time
 import hmac
 import requests
-from datetime import datetime, timezone, timedelta
+import pyotp
+from datetime import datetime, timezone, timedelta, time as dtime
 from flask import Flask, render_template, request, Response, jsonify
+from SmartApi import SmartConnect
 
 app = Flask(__name__)
 
@@ -15,16 +17,62 @@ CACHE_SECONDS = 600
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LATEST_FILE = os.path.join(BASE_DIR, "latest_levels.json")
+LIVE_SENT_FILE = os.path.join(BASE_DIR, "live_sent.json")
 IST = timezone(timedelta(hours=5, minutes=30))
+
+MARKET_OPEN = dtime(9, 15)
+MARKET_CLOSE = dtime(15, 30)
+
+
+def is_market_hours():
+    now = datetime.now(IST)
+    if now.weekday() >= 5:  # Sat/Sun
+        return False
+    return MARKET_OPEN <= now.time() <= MARKET_CLOSE
+
+
+def load_live_sent():
+    try:
+        with open(LIVE_SENT_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def already_sent_today(instrument):
+    data = load_live_sent()
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    return data.get(instrument) == today
+
+
+def mark_live_sent(instrument):
+    data = load_live_sent()
+    data[instrument] = datetime.now(IST).strftime("%Y-%m-%d")
+    tmp = LIVE_SENT_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, LIVE_SENT_FILE)
+    except Exception:
+        pass
 
 _cache = {"data": None, "time": 0}
 
 # ---- Instruments manual entry mate support kare che ----
 INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"]
 
-# ---- Level types: INTRADAY = 9:15 alert mate vaparay, WEEK52 = sirf website par ----
+# Live open-candle fetch mate token/exchange (fib_intraday_open.py sathe match)
+INSTRUMENT_TOKENS = {
+    "NIFTY": ("99926000", "NSE"),
+    "BANKNIFTY": ("99926009", "NSE"),
+    "SENSEX": ("99919000", "BSE"),
+}
+
+# ---- Level types: INTRADAY = 9:15 alert + live analysis mate vaparay, WEEK52 = sirf website par ----
 LEVEL_TYPES = ["INTRADAY", "WEEK52"]
 DEFAULT_LEVEL_TYPE = "INTRADAY"
+
+TOLERANCE_PCT = 0.20
 
 # ---- Level naming (same names as the chart indicator) ----
 FIB_RATIOS_NAMED = [
@@ -97,7 +145,133 @@ def calculate_fib_levels(val, vah):
     ]
 
 
-def build_message(instrument, level_type, val, vah, levels):
+def get_level(levels, ratio):
+    for f in levels:
+        if abs(f["ratio"] - ratio) < 0.001:
+            return f
+    return None
+
+
+# ---- Live open-candle analysis (fib_intraday_open.py jevij logic, sync/webhook mate halki version) ----
+
+def login_angel():
+    api_key = os.environ.get("ANGEL_API_KEY", "")
+    client_code = os.environ.get("ANGEL_CLIENT_ID", "")
+    password = os.environ.get("ANGEL_PASSWORD", "")
+    totp_secret = os.environ.get("ANGEL_TOTP_SECRET", "")
+    if not all([api_key, client_code, password, totp_secret]):
+        print("Angel credentials missing, live analysis skip")
+        return None
+    try:
+        smart_api = SmartConnect(api_key=api_key)
+        totp = pyotp.TOTP(totp_secret).now()
+        data = smart_api.generateSession(client_code, password, totp)
+        if not data.get("status"):
+            print(f"Angel login failed: {data}")
+            return None
+        return smart_api
+    except Exception as e:
+        print(f"Angel login error: {e}")
+        return None
+
+
+def fetch_opening_candle_quick(smart_api, token, exchange, attempts=3, wait=2):
+    today = datetime.now(IST).date()
+    params = {
+        "exchange": exchange,
+        "symboltoken": token,
+        "interval": "FIVE_MINUTE",
+        "fromdate": today.strftime("%Y-%m-%d 09:15"),
+        "todate": today.strftime("%Y-%m-%d 09:30"),
+    }
+    for attempt in range(attempts):
+        try:
+            resp = smart_api.getCandleData(params)
+            if resp.get("status") and resp.get("data"):
+                row = resp["data"][0]
+                return {
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                }
+            print(f"Candle attempt {attempt+1}: {resp}")
+        except Exception as e:
+            print(f"Candle fetch error: {e}")
+        time.sleep(wait)
+    return None
+
+
+def analyze_open(candle, levels, mid):
+    o, l = candle["open"], candle["low"]
+    tol = o * (TOLERANCE_PCT / 100)
+
+    lvl_buy_rev = get_level(levels, 0.236)
+    lvl_rev_zone = get_level(levels, 0.618)
+    lvl_breakout = get_level(levels, 1.000)
+    lvl_target1 = get_level(levels, 1.272)
+    lvl_target2 = get_level(levels, 1.618)
+
+    strength = lvl_buy_rev and l > lvl_buy_rev["price"]
+
+    def near(price, level):
+        return level and abs(price - level["price"]) <= tol
+
+    notes = []
+    prediction = []
+
+    if strength:
+        notes.append("✅ Strength (Low above Potential Buy Reversal)")
+        prediction.append("Shallow pullback → uptrend continue chance high")
+    if near(o, lvl_rev_zone):
+        notes.append("🔄 Open at Reversal Zone (0.618)")
+        prediction.append("Strong reaction zone. Possible early pause/reversal.")
+    if near(o, lvl_target1):
+        notes.append("⚠️ Open at Potential Target 1 (1.272)")
+        prediction.append("Decision zone. Breakout = continuation, Rejection = pullback.")
+    if near(o, lvl_target2):
+        notes.append("🔻 Open at Potential Target 2 (1.618)")
+        prediction.append("Exhaustion zone. High chance of reversal.")
+    if near(o, lvl_breakout):
+        notes.append("📌 Open at Potential Break out")
+        prediction.append("Range extreme. Directional move expected.")
+    if not notes:
+        notes.append("No major Fib confluence at open")
+        prediction.append("Wait for clearer reaction at key levels.")
+
+    bias = "Bullish" if o > mid else "Bearish"
+    return {"bias": bias, "notes": notes, "prediction": prediction}
+
+
+def try_live_analysis(instrument, level_type, levels):
+    """INTRADAY hoy, market hours chalu hoy, aa instrument mate aaje pehla live
+    analysis nathi moklyu, ane aaj ni opening candle mali jay — tyare j
+    Bias/Notes/Prediction pachu ave che. Baki badhi vakhat None (fib levels j jashe)."""
+    if level_type != DEFAULT_LEVEL_TYPE or instrument not in INSTRUMENT_TOKENS:
+        return None
+    if not is_market_hours():
+        print(f"{instrument}: market hours nathi, live analysis skip")
+        return None
+    if already_sent_today(instrument):
+        print(f"{instrument}: aaje pehla j live analysis moklai gayu chhe, skip")
+        return None
+    mid_lvl = get_level(levels, 0.5)
+    if not mid_lvl:
+        return None
+    smart_api = login_angel()
+    if not smart_api:
+        return None
+    token, exchange = INSTRUMENT_TOKENS[instrument]
+    candle = fetch_opening_candle_quick(smart_api, token, exchange)
+    if not candle:
+        print(f"{instrument}: aaj ni opening candle nathi mali, live analysis skip")
+        return None
+    analysis = analyze_open(candle, levels, mid_lvl["price"])
+    mark_live_sent(instrument)
+    return {"candle": candle, **analysis}
+
+
+def build_message(instrument, level_type, val, vah, levels, live=None):
     label = instrument if level_type == DEFAULT_LEVEL_TYPE else f"{instrument} ({level_type})"
     lines = [
         f"<b>📐 Manual Levels — {label}</b>",
@@ -106,6 +280,18 @@ def build_message(instrument, level_type, val, vah, levels):
     ]
     for lvl in levels:
         lines.append(f"{lvl['name']}: {lvl['price']}")
+
+    if live:
+        c = live["candle"]
+        lines.append("")
+        lines.append("<b>📊 Live Open Analysis</b>")
+        lines.append(f"O: <b>{c['open']}</b> | H: {c['high']} | L: {c['low']}")
+        lines.append(f"Bias: {live['bias']}")
+        lines.append("Notes: " + " | ".join(live["notes"]))
+        lines.append("Prediction:")
+        for p in live["prediction"]:
+            lines.append(f"• {p}")
+
     return "\n".join(lines)
 
 
@@ -235,7 +421,8 @@ def fib_levels():
             else:
                 levels = calculate_fib_levels(val, vah)
                 save_latest(instrument, level_type, val, vah, levels, "Website")
-                sent = send_telegram(build_message(instrument, level_type, val, vah, levels))
+                live = try_live_analysis(instrument, level_type, levels)
+                sent = send_telegram(build_message(instrument, level_type, val, vah, levels, live))
                 latest = load_latest(instrument, level_type)
                 if latest:
                     updated = latest["updated"]
@@ -291,7 +478,8 @@ def telegram_webhook(secret):
 
     levels = calculate_fib_levels(val, vah)
     save_latest(instrument, level_type, val, vah, levels, "Telegram")
-    send_telegram(build_message(instrument, level_type, val, vah, levels))
+    live = try_live_analysis(instrument, level_type, levels)
+    send_telegram(build_message(instrument, level_type, val, vah, levels, live))
     return "ok"
 
 
