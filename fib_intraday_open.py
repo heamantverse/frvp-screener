@@ -37,7 +37,7 @@ INSTRUMENTS = [
     {"name": "SENSEX", "token": "99919000", "exchange": "BSE"},
 ]
 
-INTERVAL = "FIVE_MINUTE"
+INTERVAL = "THREE_MINUTE"
 TOLERANCE_PCT = 0.20
 
 # Same names/ratios as app.py (website) na FIB_RATIOS_NAMED — VRSuccessful indicator style
