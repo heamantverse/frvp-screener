@@ -261,7 +261,6 @@ def main():
         lines.append("Prediction:")
         for p in r["prediction"]:
             lines.append(f"• {p}")
-        lines.append(f"VLOW: {r['vlow']} | VHIGH: {r['vhigh']}")
         for lvl in r["fib_levels"]:
             lines.append(f"{lvl['name']}: {lvl['price']}")
         lines.append("")
