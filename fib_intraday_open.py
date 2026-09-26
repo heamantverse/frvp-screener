@@ -124,7 +124,7 @@ def fetch_opening_candle(smart_api, token, exchange):
                 print(f"Attempt {attempt+1}: {resp}")
         except Exception as e:
             print(f"Attempt {attempt+1} error: {e}")
-        time.sleep(3)
+        time.sleep(1.5)
     print("Failed to fetch opening candle")
     return None
 
