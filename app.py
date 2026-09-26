@@ -180,7 +180,7 @@ def fetch_opening_candle_quick(smart_api, token, exchange, attempts=3, wait=2):
     params = {
         "exchange": exchange,
         "symboltoken": token,
-        "interval": "FIVE_MINUTE",
+        "interval": "THREE_MINUTE",
         "fromdate": today.strftime("%Y-%m-%d 09:15"),
         "todate": today.strftime("%Y-%m-%d 09:30"),
     }
