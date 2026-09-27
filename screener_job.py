@@ -27,6 +27,7 @@ TOTP_SECRET = os.environ["ANGEL_TOTP_SECRET"]
 INSTRUMENT_MASTER_URL = "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json"
 NSE_MASTER_CSV = "nse_equity_master.csv"
 RESULTS_FILE = "results.json"
+SYMBOL_MAP_FILE = "symbol_token_map.json"
 
 # STOCK_UNIVERSE: "NIFTY50" (hardcoded 50 list), "FNO" (badha F&O-eligible
 # stocks, Angel instrument master na NFO segment thi khud j nikale che),
@@ -123,6 +124,16 @@ def build_symbol_token_map(symbols, master_df=None):
         if not match.empty:
             token_map[sym] = str(match.iloc[0]["token"])
     return token_map
+
+
+def build_full_nse_token_map(master_df):
+    """Website na /stock search mate — badha NSE-EQ symbols -> token
+    (FNO list thi alag, aa badha stocks mate chhe, jethi koi pan stock search thai shake)."""
+    nse_eq = master_df[(master_df["exch_seg"] == "NSE") & (master_df["symbol"].str.endswith("-EQ"))]
+    mapping = {}
+    for _, row in nse_eq.iterrows():
+        mapping[row["symbol"][:-3]] = str(row["token"])
+    return mapping
 
 
 def fetch_52_week_data(smart_api, token):
@@ -351,6 +362,12 @@ def main():
     smart_api = login()
 
     master_df = fetch_instrument_master()
+
+    # Website na /stock search mate symbol->token map save karo (results.json sathe j commit thashe)
+    full_token_map = build_full_nse_token_map(master_df)
+    with open(SYMBOL_MAP_FILE, "w") as f:
+        json.dump(full_token_map, f)
+    print(f"Symbol token map: {len(full_token_map)} NSE-EQ symbols saved")
 
     if STOCK_UNIVERSE == "ALL":
         master_csv_df = pd.read_csv(NSE_MASTER_CSV)
