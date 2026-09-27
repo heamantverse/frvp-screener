@@ -124,7 +124,7 @@ def fetch_opening_candle(smart_api, token, exchange):
                 print(f"Attempt {attempt+1}: {resp}")
         except Exception as e:
             print(f"Attempt {attempt+1} error: {e}")
-        time.sleep(1.5)
+        time.sleep(3)
     print("Failed to fetch opening candle")
     return None
 
@@ -140,6 +140,32 @@ def get_level(fib_levels, ratio):
         if abs(f["ratio"] - ratio) < 0.001:
             return f
     return None
+
+def generate_trade_idea(o, fib_levels, bias):
+    """Nearby support/resistance levels parthi ek concrete idea banave che —
+    kya level ni raah jovi, CE/PE levu ke nahi, ane target kya. Educational
+    hint j chhe, final call/timing tamare jate levano."""
+    sorted_lvls = sorted(fib_levels, key=lambda l: l["price"])
+    below = [l for l in sorted_lvls if l["price"] < o]
+    above = [l for l in sorted_lvls if l["price"] > o]
+    support = below[-1] if below else None
+    resistance = above[0] if above else None
+    target_up = above[1] if len(above) > 1 else resistance
+    target_down = below[-2] if len(below) > 1 else support
+
+    if bias == "Bullish" and support:
+        target = resistance or target_up
+        idea = (f"📈 {support['name']} (~{support['price']}) par hold/bounce ni raah jovi — "
+                f"confirm thay pachi CE consider karo, target {target['name']} (~{target['price']}) "
+                f"aas-pas. Confirmation vagar entry na levo.")
+    elif bias == "Bearish" and resistance:
+        target = support or target_down
+        idea = (f"📉 {resistance['name']} (~{resistance['price']}) par rejection ni raah jovi — "
+                f"confirm thay pachi PE consider karo, target {target['name']} (~{target['price']}) "
+                f"aas-pas. Confirmation vagar entry na levo.")
+    else:
+        idea = "Clear nearby level nathi mali — abhi wait-and-watch rakho."
+    return idea
 
 def analyze(candle, fib_levels, mid):
     o, h, l = candle["open"], candle["high"], candle["low"]
@@ -181,6 +207,7 @@ def analyze(candle, fib_levels, mid):
         prediction.append("Wait for clearer reaction at key levels.")
 
     bias = "Bullish" if o > mid else "Bearish"
+    prediction.append(generate_trade_idea(o, fib_levels, bias))
 
     return {
         "bias": bias,
@@ -261,6 +288,7 @@ def main():
         lines.append("Prediction:")
         for p in r["prediction"]:
             lines.append(f"• {p}")
+        lines.append(f"VLOW: {r['vlow']} | VHIGH: {r['vhigh']}")
         for lvl in r["fib_levels"]:
             lines.append(f"{lvl['name']}: {lvl['price']}")
         lines.append("")
