@@ -13,7 +13,7 @@ from SmartApi import SmartConnect
 
 app = Flask(__name__)
 
-GITHUB_REPO = "heamantverse/scope-data"
+GITHUB_REPO = "heamantverse/frvp-screener"
 GITHUB_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/results.json"
 CACHE_SECONDS = 600
 
