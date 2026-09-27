@@ -23,6 +23,7 @@ jobs:
 
       - name: Run screener
         env:
+          PYTHONUNBUFFERED: "1"
           ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
           ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
           ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
