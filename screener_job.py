@@ -28,8 +28,12 @@ INSTRUMENT_MASTER_URL = "https://margincalculator.angelone.in/OpenAPI_File/files
 NSE_MASTER_CSV = "nse_equity_master.csv"
 RESULTS_FILE = "results.json"
 
-ALL_STOCKS = False
-SYMBOL_LIST = [
+# STOCK_UNIVERSE: "NIFTY50" (hardcoded 50 list), "FNO" (badha F&O-eligible
+# stocks, Angel instrument master na NFO segment thi khud j nikale che),
+# "ALL" (nse_equity_master.csv na badha stocks — 2000+, bau lambu chale)
+STOCK_UNIVERSE = "FNO"
+
+NIFTY50_LIST = [
     "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK",
     "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BEL", "BHARTIARTL",
     "CIPLA", "COALINDIA", "DRREDDY", "EICHERMOT", "ETERNAL",
@@ -41,6 +45,9 @@ SYMBOL_LIST = [
     "SUNPHARMA", "TATACONSUMER", "TATAMOTORS", "TATASTEEL", "TCS",
     "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
 ]
+
+# Index F&O — underlyings nahi, stocks nahi, etle FNO mode ma skip thay
+INDEX_UNDERLYINGS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"}
 
 INTERVAL = "THIRTY_MINUTE"
 WEEKS_LOOKBACK = 52
@@ -91,10 +98,24 @@ def login():
     return smart_api
 
 
-def build_symbol_token_map(symbols):
+def fetch_instrument_master():
     resp = requests.get(INSTRUMENT_MASTER_URL, timeout=60)
     resp.raise_for_status()
-    master_df = pd.DataFrame(resp.json())
+    return pd.DataFrame(resp.json())
+
+
+def get_fno_symbols(master_df):
+    """NFO segment na options/futures contracts na underlying (stock) names
+    kadhi ne unique list banave che — index F&O (NIFTY/BANKNIFTY etc) chhodi ne."""
+    nfo = master_df[master_df["exch_seg"] == "NFO"]
+    names = nfo["name"].dropna().unique().tolist()
+    stock_names = sorted(n for n in names if n and n not in INDEX_UNDERLYINGS)
+    return stock_names
+
+
+def build_symbol_token_map(symbols, master_df=None):
+    if master_df is None:
+        master_df = fetch_instrument_master()
     nse_eq = master_df[(master_df["exch_seg"] == "NSE") & (master_df["symbol"].str.endswith("-EQ"))]
     token_map = {}
     for sym in symbols:
@@ -329,13 +350,18 @@ def nifty_status(smart_api):
 def main():
     smart_api = login()
 
-    if ALL_STOCKS:
-        master_df = pd.read_csv(NSE_MASTER_CSV)
-        symbols = master_df["symbol"].tolist()
-    else:
-        symbols = SYMBOL_LIST
+    master_df = fetch_instrument_master()
 
-    token_map = build_symbol_token_map(symbols)
+    if STOCK_UNIVERSE == "ALL":
+        master_csv_df = pd.read_csv(NSE_MASTER_CSV)
+        symbols = master_csv_df["symbol"].tolist()
+    elif STOCK_UNIVERSE == "FNO":
+        symbols = get_fno_symbols(master_df)
+        print(f"F&O universe: {len(symbols)} stocks")
+    else:
+        symbols = NIFTY50_LIST
+
+    token_map = build_symbol_token_map(symbols, master_df=master_df)
     results = []
 
     for symbol, token in token_map.items():
