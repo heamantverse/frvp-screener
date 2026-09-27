@@ -204,6 +204,31 @@ def fetch_opening_candle_quick(smart_api, token, exchange, attempts=3, wait=2):
     return None
 
 
+def generate_trade_idea(o, levels, bias):
+    """Nearby support/resistance levels parthi ek concrete idea banave che —
+    kya level ni raah jovi, CE/PE levu ke nahi, ane target kya. Educational
+    hint j chhe, final call/timing tamare jate levano."""
+    sorted_lvls = sorted(levels, key=lambda l: l["price"])
+    below = [l for l in sorted_lvls if l["price"] < o]
+    above = [l for l in sorted_lvls if l["price"] > o]
+    support = below[-1] if below else None
+    resistance = above[0] if above else None
+    target_up = above[1] if len(above) > 1 else resistance
+    target_down = below[-2] if len(below) > 1 else support
+
+    if bias == "Bullish" and support:
+        target = resistance or target_up
+        return (f"📈 {support['name']} (~{support['price']}) par hold/bounce ni raah jovi — "
+                f"confirm thay pachi CE consider karo, target {target['name']} (~{target['price']}) "
+                f"aas-pas. Confirmation vagar entry na levo.")
+    elif bias == "Bearish" and resistance:
+        target = support or target_down
+        return (f"📉 {resistance['name']} (~{resistance['price']}) par rejection ni raah jovi — "
+                f"confirm thay pachi PE consider karo, target {target['name']} (~{target['price']}) "
+                f"aas-pas. Confirmation vagar entry na levo.")
+    return "Clear nearby level nathi mali — abhi wait-and-watch rakho."
+
+
 def analyze_open(candle, levels, mid):
     o, l = candle["open"], candle["low"]
     tol = o * (TOLERANCE_PCT / 100)
@@ -242,6 +267,7 @@ def analyze_open(candle, levels, mid):
         prediction.append("Wait for clearer reaction at key levels.")
 
     bias = "Bullish" if o > mid else "Bearish"
+    prediction.append(generate_trade_idea(o, levels, bias))
     return {"bias": bias, "notes": notes, "prediction": prediction}
 
 
