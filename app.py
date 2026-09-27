@@ -527,7 +527,9 @@ def fib_api(secret):
 # INTRADAY = gai kal na high-low thi Fib + aaj ni opening candle live analysis.
 # ============================================================
 
-INSTRUMENT_MASTER_URL = "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json"
+# Symbol -> token map have GitHub thi j male chhe (screener_job.py roj banave che),
+# PythonAnywhere free plan thi margincalculator.angelone.in ne direct call thai shakto nathi (403).
+SYMBOL_MAP_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/symbol_token_map.json"
 _instrument_cache = {"map": None, "time": 0}
 INSTRUMENT_CACHE_SECONDS = 6 * 3600  # 6 kalak cache (aakhi master list moti chhe)
 
@@ -539,16 +541,25 @@ WEEK52_NUM_BINS = 24
 
 
 def load_symbol_token_map():
-    """NSE equity na badha symbols -> Angel token, 6 kalak cache thi (moti file, roj-roj na mangavi)."""
+    """NSE equity na badha symbols -> Angel token, GitHub thi (screener_job.py roj banave che,
+    6 kalak cache thi — moti file, roj-roj na mangavi)."""
     if _instrument_cache["map"] and time.time() - _instrument_cache["time"] < INSTRUMENT_CACHE_SECONDS:
         return _instrument_cache["map"]
-    resp = requests.get(INSTRUMENT_MASTER_URL, timeout=60)
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise RuntimeError("GITHUB_TOKEN set nathi")
+
+    resp = requests.get(
+        SYMBOL_MAP_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.raw+json",
+        },
+        timeout=20,
+    )
     resp.raise_for_status()
-    master = resp.json()
-    mapping = {}
-    for row in master:
-        if row.get("exch_seg") == "NSE" and str(row.get("symbol", "")).endswith("-EQ"):
-            mapping[row["symbol"][:-3]] = str(row["token"])
+    mapping = resp.json()
     _instrument_cache["map"] = mapping
     _instrument_cache["time"] = time.time()
     return mapping
