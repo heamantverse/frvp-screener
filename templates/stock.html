@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="gu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scopevision — Stock Search</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #10141c;
+    --panel-hi: #141924;
+    --grid: #1c232e;
+    --text: #e7ebf2;
+    --muted: #7c8798;
+    --accent: #f0b429;
+    --bull: #16c784;
+    --bear: #ea3943;
+    --font-ui: "IBM Plex Sans", -apple-system, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh;
+    color: var(--text);
+    font-family: var(--font-ui);
+    background:
+      linear-gradient(var(--bg), var(--bg)),
+      repeating-linear-gradient(0deg, rgba(255,255,255,.028) 0 1px, transparent 1px 40px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,.028) 0 1px, transparent 1px 40px);
+    background-color: var(--bg);
+    padding: 24px 16px 70px;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--grid); border-radius: 6px; }
+
+  header {
+    display: flex; justify-content: space-between; align-items: flex-end;
+    flex-wrap: wrap; gap: 10px; margin-bottom: 18px;
+    border-bottom: 1px solid var(--grid); padding-bottom: 16px;
+  }
+  h1 { margin: 0; font-size: 1.2rem; font-weight: 700; color: #fff; }
+  a.back { color: var(--muted); text-decoration: none; font-size: .8rem; font-family: var(--font-mono); }
+  a.back:hover { color: #fff; }
+
+  .card { padding: 20px; margin-bottom: 16px; }
+
+  .type-tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  .ttab {
+    padding: 6px 13px; border-radius: 4px; cursor: pointer; font-size: .76rem; font-weight: 500;
+    color: var(--muted); background: transparent; border: 1px solid var(--grid);
+    text-decoration: none; font-family: var(--font-mono);
+  }
+  .ttab.active { color: var(--bg); background: var(--text); border-color: var(--text); }
+
+  form { display: flex; gap: 10px; flex-wrap: wrap; }
+  input[type="text"] {
+    flex: 1; min-width: 160px; padding: 11px 14px; border-radius: 4px; font-size: 1rem;
+    color: var(--text); background: var(--bg); border: 1px solid var(--grid);
+    text-transform: uppercase; font-family: var(--font-mono);
+  }
+  input[type="text"]:focus { outline: none; border-color: var(--accent); }
+  input[type="text"]::placeholder { color: var(--muted); text-transform: none; }
+
+  button {
+    padding: 11px 20px; border-radius: 4px; font-size: .88rem; font-weight: 600;
+    color: #0b0e14; background: var(--accent); border: none; cursor: pointer; font-family: var(--font-mono);
+  }
+  button:hover { opacity: .9; }
+
+  .msg { padding: 9px 13px; border-radius: 4px; font-size: .82rem; font-family: var(--font-mono); }
+  .msg.error { background: rgba(234,57,67,.12); color: var(--bear); }
+  .msg.note { background: rgba(240,180,41,.1); color: var(--accent); }
+
+  table { width: 100%; border-collapse: collapse; font-size: .86rem; font-family: var(--font-mono); }
+  thead th {
+    text-align: left; padding: 9px 8px; font-weight: 500; color: var(--muted);
+    font-size: .7rem; letter-spacing: .04em; border-bottom: 1px solid var(--grid);
+  }
+  tbody td {
+    padding: 9px 8px; border-bottom: 1px solid var(--grid);
+    font-variant-numeric: tabular-nums;
+  }
+  tbody tr:hover { background: var(--panel-hi); }
+  .price { font-weight: 600; color: #fff; }
+  .meta { color: var(--muted); font-size: .8rem; margin: 0 0 12px; line-height: 1.6; font-family: var(--font-mono); }
+  .meta b { color: #fff; }
+
+  .live-box { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--grid); font-family: var(--font-mono); }
+  .live-box h3 { margin: 0 0 8px; font-size: .92rem; color: #fff; font-weight: 600; letter-spacing: .02em; }
+  .bias { font-weight: 600; }
+  .bias.Bullish { color: var(--bull); }
+  .bias.Bearish { color: var(--bear); }
+  .notes, .pred { font-size: .82rem; color: var(--muted); margin: 4px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Stock Search</h1>
+    <a class="back" href="/">← Screener</a>
+  </header>
+
+  <div class="card panel">
+    <div class="type-tabs">
+      <a class="ttab {{ 'active' if level_type == 'WEEK52' else '' }}" href="/stock?symbol={{ symbol }}&amp;type=WEEK52">WEEK52 (FRVP)</a>
+      <a class="ttab {{ 'active' if level_type == 'INTRADAY' else '' }}" href="/stock?symbol={{ symbol }}&amp;type=INTRADAY">INTRADAY</a>
+    </div>
+    <form method="GET" action="/stock">
+      <input type="hidden" name="type" value="{{ level_type }}">
+      <input type="text" name="symbol" placeholder="dat. RELIANCE, TCS, INFY" value="{{ symbol }}" autofocus>
+      <button type="submit">SEARCH</button>
+    </form>
+  </div>
+
+  {% if error %}
+  <div class="card panel">
+    <div class="msg error">{{ error }}</div>
+  </div>
+  {% endif %}
+
+  {% if result %}
+  <div class="card panel">
+    {% if note %}<div class="msg note" style="margin-bottom:14px;">{{ note }}</div>{% endif %}
+    <p class="meta">
+      <b>{{ result.symbol }}</b> ({{ level_type }})
+      {% if result.ltp %} — LTP: <b>{{ result.ltp }}</b>{% endif %}
+      <br>VLOW: <b>{{ result.val }}</b> &nbsp;|&nbsp; VHIGH: <b>{{ result.vah }}</b>
+    </p>
+    <table>
+      <thead><tr><th>LEVEL</th><th style="text-align:right;">PRICE</th></tr></thead>
+      <tbody>
+        {% for lvl in result.levels %}
+        <tr>
+          <td>{{ lvl.name }}</td>
+          <td class="price" style="text-align:right;">{{ lvl.price }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if result.live %}
+    <div class="live-box">
+      <h3>LIVE OPEN ANALYSIS</h3>
+      <p class="meta">O: <b>{{ result.live.candle.open }}</b> | H: {{ result.live.candle.high }} | L: {{ result.live.candle.low }}</p>
+      <p class="bias {{ result.live.bias }}">BIAS: {{ result.live.bias }}</p>
+      <p class="notes">NOTES: {{ result.live.notes | join(" | ") }}</p>
+      <p class="pred">PREDICTION:</p>
+      {% for p in result.live.prediction %}
+      <p class="pred">• {{ p }}</p>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+</body>
+</html>
