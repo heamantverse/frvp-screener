@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Scopevision — Stock Search</title>
+<title>Scopevision Screener</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -34,128 +34,357 @@
     background-color: var(--bg);
     padding: 24px 16px 70px;
   }
-  .wrap { max-width: 680px; margin: 0 auto; }
-  .panel { background: var(--panel); border: 1px solid var(--grid); border-radius: 6px; }
+  .wrap { max-width: 1240px; margin: 0 auto; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--grid);
+    border-radius: 6px;
+  }
 
   header {
     display: flex; justify-content: space-between; align-items: flex-end;
-    flex-wrap: wrap; gap: 10px; margin-bottom: 18px;
+    flex-wrap: wrap; gap: 10px; margin-bottom: 4px;
     border-bottom: 1px solid var(--grid); padding-bottom: 16px;
   }
-  h1 { margin: 0; font-size: 1.2rem; font-weight: 700; color: #fff; }
-  a.back { color: var(--muted); text-decoration: none; font-size: .8rem; font-family: var(--font-mono); }
-  a.back:hover { color: #fff; }
-
-  .card { padding: 20px; margin-bottom: 16px; }
-
-  .type-tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
-  .ttab {
-    padding: 6px 13px; border-radius: 4px; cursor: pointer; font-size: .76rem; font-weight: 500;
-    color: var(--muted); background: transparent; border: 1px solid var(--grid);
-    text-decoration: none; font-family: var(--font-mono);
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  h1 {
+    margin: 0; font-size: 1.3rem; font-weight: 700; letter-spacing: -0.01em; color: #fff;
   }
-  .ttab.active { color: var(--bg); background: var(--text); border-color: var(--text); }
-
-  form { display: flex; gap: 10px; flex-wrap: wrap; }
-  input[type="text"] {
-    flex: 1; min-width: 160px; padding: 11px 14px; border-radius: 4px; font-size: 1rem;
-    color: var(--text); background: var(--bg); border: 1px solid var(--grid);
-    text-transform: uppercase; font-family: var(--font-mono);
+  .brand-tick { font-family: var(--font-mono); font-size: .78rem; color: var(--accent); }
+  .header-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .updated { color: var(--muted); font-size: .78rem; font-family: var(--font-mono); }
+  .fib-link {
+    color: var(--muted); text-decoration: none; font-size: .82rem;
+    padding: 6px 12px; border-radius: 4px; border: 1px solid var(--grid);
   }
-  input[type="text"]:focus { outline: none; border-color: var(--accent); }
-  input[type="text"]::placeholder { color: var(--muted); text-transform: none; }
+  .fib-link:hover { color: #fff; border-color: var(--muted); }
 
-  button {
-    padding: 11px 20px; border-radius: 4px; font-size: .88rem; font-weight: 600;
-    color: #0b0e14; background: var(--accent); border: none; cursor: pointer; font-family: var(--font-mono);
+  .market {
+    display: none; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 16px; margin: 14px 0; font-size: .88rem; font-family: var(--font-mono);
   }
-  button:hover { opacity: .9; }
+  .muted { color: var(--muted); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .dot.up { background: var(--bull); }
+  .dot.down { background: var(--bear); }
+  .dot.mixed { background: var(--accent); }
 
-  .msg { padding: 9px 13px; border-radius: 4px; font-size: .82rem; font-family: var(--font-mono); }
-  .msg.error { background: rgba(234,57,67,.12); color: var(--bear); }
-  .msg.note { background: rgba(240,180,41,.1); color: var(--accent); }
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--grid); margin: 16px 0; border: 1px solid var(--grid); border-radius: 6px; overflow: hidden; }
+  .sum-card { background: var(--panel); padding: 14px 16px; cursor: pointer; }
+  .sum-card:hover { background: var(--panel-hi); }
+  .sum-card.active { background: var(--panel-hi); box-shadow: inset 0 -2px 0 var(--accent); }
+  .sum-card .num { font-family: var(--font-mono); font-size: 1.6rem; font-weight: 600; line-height: 1.1; }
+  .sum-card .lbl { color: var(--muted); font-size: .72rem; letter-spacing: .04em; margin-top: 2px; }
+  .sum-card.buy .num { color: var(--bull); }
+  .sum-card.sell .num { color: var(--bear); }
+  .sum-card.watch .num { color: var(--accent); }
 
-  table { width: 100%; border-collapse: collapse; font-size: .86rem; font-family: var(--font-mono); }
+  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    padding: 7px 14px; border-radius: 4px; cursor: pointer; font-size: .82rem; font-weight: 500;
+    color: var(--muted); background: var(--panel); border: 1px solid var(--grid); font-family: var(--font-mono);
+  }
+  .chip.active { color: #0b0e14; background: var(--accent); border-color: var(--accent); }
+  .search {
+    flex: 1; min-width: 200px; padding: 9px 14px; border-radius: 4px; font-size: .88rem;
+    color: var(--text); background: var(--panel); border: 1px solid var(--grid); font-family: var(--font-mono);
+  }
+  .search::placeholder { color: var(--muted); }
+  .search:focus { outline: none; border-color: var(--accent); }
+  .sort-sel {
+    display: none; padding: 9px 12px; border-radius: 4px; font-size: .85rem;
+    color: var(--text); background: var(--panel); border: 1px solid var(--grid); font-family: var(--font-mono);
+  }
+  .sort-sel option { color: #111; }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .84rem; min-width: 1080px; font-family: var(--font-mono); }
   thead th {
-    text-align: left; padding: 9px 8px; font-weight: 500; color: var(--muted);
-    font-size: .7rem; letter-spacing: .04em; border-bottom: 1px solid var(--grid);
+    text-align: right; padding: 11px 12px; font-weight: 500; color: var(--muted);
+    cursor: pointer; user-select: none; white-space: nowrap; font-size: .72rem;
+    letter-spacing: .03em; border-bottom: 1px solid var(--grid);
   }
+  thead th:first-child, thead th.left { text-align: left; }
+  thead th:hover { color: var(--accent); }
   tbody td {
-    padding: 9px 8px; border-bottom: 1px solid var(--grid);
-    font-variant-numeric: tabular-nums;
+    padding: 10px 12px; text-align: right; white-space: nowrap;
+    border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums;
   }
+  tbody td:first-child, td.left { text-align: left; }
   tbody tr:hover { background: var(--panel-hi); }
-  .price { font-weight: 600; color: #fff; }
-  .meta { color: var(--muted); font-size: .8rem; margin: 0 0 12px; line-height: 1.6; font-family: var(--font-mono); }
-  .meta b { color: #fff; }
+  .sym { font-weight: 600; color: #fff; font-family: var(--font-ui); }
 
-  .live-box { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--grid); font-family: var(--font-mono); }
-  .live-box h3 { margin: 0 0 8px; font-size: .92rem; color: #fff; font-weight: 600; letter-spacing: .02em; }
-  .bias { font-weight: 600; }
-  .bias.Bullish { color: var(--bull); }
-  .bias.Bearish { color: var(--bear); }
-  .notes, .pred { font-size: .82rem; color: var(--muted); margin: 4px 0; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 3px; font-size: .72rem; font-weight: 600; font-family: var(--font-mono); }
+  .badge.BUY { background: rgba(22,199,132,.14); color: var(--bull); }
+  .badge.SELL { background: rgba(234,57,67,.14); color: var(--bear); }
+  .badge.WATCH { background: rgba(240,180,41,.14); color: var(--accent); }
+
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 3px; font-size: .72rem; font-weight: 500; }
+  .tag.up { background: rgba(22,199,132,.14); color: var(--bull); }
+  .tag.down { background: rgba(234,57,67,.14); color: var(--bear); }
+  .tag.mixed { background: rgba(240,180,41,.14); color: var(--accent); }
+  .tag.warn { background: rgba(240,180,41,.14); color: var(--accent); }
+  .hot { color: var(--accent); font-weight: 600; }
+  .good { color: var(--bull); font-weight: 600; }
+
+  .cards { display: none; grid-template-columns: 1fr; gap: 1px; background: var(--grid); border: 1px solid var(--grid); border-radius: 6px; overflow: hidden; }
+  .card { background: var(--panel); padding: 14px; font-family: var(--font-mono); }
+  .card-top { display: flex; justify-content: space-between; align-items: center; }
+  .card .sym { font-size: 1.02rem; font-family: var(--font-ui); }
+  .card-ltp { margin: 6px 0 10px; font-size: 1.25rem; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .grid small { display: block; color: var(--muted); font-size: .64rem; letter-spacing: .04em; }
+  .grid div { font-variant-numeric: tabular-nums; font-size: .88rem; }
+  .card-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .cchip { padding: 2px 9px; border-radius: 3px; font-size: .72rem; background: var(--panel-hi); border: 1px solid var(--grid); }
+
+  .empty { text-align: center; color: var(--muted); padding: 50px 0; display: none; font-family: var(--font-mono); }
+
+  @media (max-width: 760px) {
+    body { padding: 16px 12px 60px; }
+    h1 { font-size: 1.1rem; }
+    .summary { grid-template-columns: repeat(2, 1fr); }
+    .table-wrap { display: none; }
+    .cards { display: grid; }
+    .sort-sel { display: block; }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>Stock Search</h1>
-    <a class="back" href="/">← Screener</a>
+    <div class="brand">
+      <h1>Scopevision</h1>
+      <span class="brand-tick">SCREENER</span>
+    </div>
+    <div class="header-right">
+      <a class="fib-link" href="/stock">Stock Search</a>
+      <a class="fib-link" href="/fib">Levels</a>
+      <span class="updated" id="updated"></span>
+    </div>
   </header>
 
-  <div class="card panel">
-    <div class="type-tabs">
-      <a class="ttab {{ 'active' if level_type == 'WEEK52' else '' }}" href="/stock?symbol={{ symbol }}&amp;type=WEEK52">WEEK52 (FRVP)</a>
-      <a class="ttab {{ 'active' if level_type == 'INTRADAY' else '' }}" href="/stock?symbol={{ symbol }}&amp;type=INTRADAY">INTRADAY</a>
+  <div class="market panel" id="market"></div>
+
+  <div class="summary" id="summary"></div>
+
+  <div class="toolbar">
+    <div class="chips" id="chips">
+      <button class="chip active" data-f="ALL">ALL</button>
+      <button class="chip" data-f="BUY">BUY</button>
+      <button class="chip" data-f="SELL">SELL</button>
+      <button class="chip" data-f="WATCH">WATCH</button>
     </div>
-    <form method="GET" action="/stock">
-      <input type="hidden" name="type" value="{{ level_type }}">
-      <input type="text" name="symbol" placeholder="dat. RELIANCE, TCS, INFY" value="{{ symbol }}" autofocus>
-      <button type="submit">SEARCH</button>
-    </form>
+    <input class="search" id="search" placeholder="Symbol search karo (e.g. RELIANCE)">
+    <select class="sort-sel" id="sortSel">
+      <option value="symbol">Sort: Symbol</option>
+      <option value="signal">Sort: Signal</option>
+      <option value="rr">Sort: R:R</option>
+      <option value="vol_ratio">Sort: Vol x</option>
+      <option value="ltp">Sort: LTP</option>
+    </select>
   </div>
 
-  {% if error %}
-  <div class="card panel">
-    <div class="msg error">{{ error }}</div>
-  </div>
-  {% endif %}
-
-  {% if result %}
-  <div class="card panel">
-    {% if note %}<div class="msg note" style="margin-bottom:14px;">{{ note }}</div>{% endif %}
-    <p class="meta">
-      <b>{{ result.symbol }}</b> ({{ level_type }})
-      {% if result.ltp %} — LTP: <b>{{ result.ltp }}</b>{% endif %}
-      <br>VLOW: <b>{{ result.val }}</b> &nbsp;|&nbsp; VHIGH: <b>{{ result.vah }}</b>
-    </p>
+  <div class="table-wrap panel">
     <table>
-      <thead><tr><th>LEVEL</th><th style="text-align:right;">PRICE</th></tr></thead>
-      <tbody>
-        {% for lvl in result.levels %}
-        <tr>
-          <td>{{ lvl.name }}</td>
-          <td class="price" style="text-align:right;">{{ lvl.price }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
+      <thead><tr id="thead-row"></tr></thead>
+      <tbody id="tbody"></tbody>
     </table>
-
-    {% if result.live %}
-    <div class="live-box">
-      <h3>LIVE OPEN ANALYSIS</h3>
-      <p class="meta">O: <b>{{ result.live.candle.open }}</b> | H: {{ result.live.candle.high }} | L: {{ result.live.candle.low }}</p>
-      <p class="bias {{ result.live.bias }}">BIAS: {{ result.live.bias }}</p>
-      <p class="notes">NOTES: {{ result.live.notes | join(" | ") }}</p>
-      <p class="pred">PREDICTION:</p>
-      {% for p in result.live.prediction %}
-      <p class="pred">• {{ p }}</p>
-      {% endfor %}
-    </div>
-    {% endif %}
   </div>
-  {% endif %}
+
+  <div class="cards" id="cards"></div>
+  <p class="empty" id="empty">Kai stock na male</p>
 </div>
+
+<script>
+  const stocks = {{ stocks | tojson }};
+  const market = {{ market | tojson }};
+  const lastUpdated = "{{ last_updated }}";
+
+  const COLS = [
+    { key: "symbol", label: "Symbol" },
+    { key: "ltp", label: "LTP" },
+    { key: "poc", label: "Point" },
+    { key: "vah", label: "VHIGH" },
+    { key: "val", label: "VLOW" },
+    { key: "signal", label: "Signal", left: true },
+    { key: "short_target", label: "Short Target" },
+    { key: "long_target", label: "Long Target" },
+    { key: "stop_loss", label: "SL" },
+    { key: "trend", label: "Trend" },
+    { key: "vol_ratio", label: "Vol x" },
+    { key: "rr", label: "R:R" },
+    { key: "liquidity", label: "Liq" },
+    { key: "corp_action", label: "Check" }
+  ];
+
+  let sortKey = "symbol", sortDir = 1, filter = "ALL";
+
+  // ---------- helpers ----------
+  function fmt(v) { return (v === null || v === undefined) ? "—" : v; }
+
+  function sigOf(s) {
+    const t = s.signal || "";
+    if (t.includes("WATCH")) return "WATCH";
+    if (t.includes("BUY")) return "BUY";
+    return "SELL";
+  }
+
+  function badge(sg) { return `<span class="badge ${sg}">${sg}</span>`; }
+
+  function trendTag(t) {
+    if (!t || t === "NA") return `<span class="muted">—</span>`;
+    const c = t === "Up" ? "up" : (t === "Down" ? "down" : "mixed");
+    const arrow = t === "Up" ? "▲ " : (t === "Down" ? "▼ " : "◆ ");
+    return `<span class="tag ${c}">${arrow}${t}</span>`;
+  }
+
+  function volCell(v) {
+    if (v === null || v === undefined) return "—";
+    return `<span class="${v >= 1.5 ? "hot" : ""}">${v}x</span>`;
+  }
+
+  function rrCell(r) {
+    if (r === null || r === undefined) return "—";
+    return `<span class="${r >= 2 ? "good" : ""}">${r}</span>`;
+  }
+
+  function liqCell(l) {
+    if (l === "Low") return `<span class="tag warn">Low</span>`;
+    return l ? l : "—";
+  }
+
+  function checkCell(c) { return c ? `<span class="tag down">Check</span>` : ""; }
+
+  function cmp(a, b) {
+    let av = a[sortKey], bv = b[sortKey];
+    if (sortKey === "signal") { av = sigOf(a); bv = sigOf(b); }
+    const an = (av === null || av === undefined);
+    const bn = (bv === null || bv === undefined);
+    if (an && bn) return 0;
+    if (an) return 1;
+    if (bn) return -1;
+    if (typeof av === "string") return sortDir * av.localeCompare(bv);
+    return sortDir * (Number(av) - Number(bv));
+  }
+
+  // ---------- static parts ----------
+  try {
+    const d = new Date(lastUpdated.replace(/\.\d+/, ""));
+    document.getElementById("updated").textContent = "UPDATED " +
+      d.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" });
+  } catch (e) {
+    document.getElementById("updated").textContent = "UPDATED " + lastUpdated;
+  }
+
+  if (market) {
+    const c = market.trend === "Up" ? "up" : (market.trend === "Down" ? "down" : "mixed");
+    const el = document.getElementById("market");
+    el.innerHTML = `<span class="dot ${c}"></span><b>NIFTY 50</b>` +
+      `<span class="tag ${c}">${market.trend}</span>` +
+      `<span class="muted">CLOSE ${market.close} &nbsp;·&nbsp; 200DMA ${market.dma200}</span>`;
+    el.style.display = "flex";
+  }
+
+  document.getElementById("thead-row").innerHTML = COLS.map(c =>
+    `<th data-key="${c.key}" class="${c.left ? "left" : ""}">${c.label}</th>`).join("");
+
+  function renderSummary() {
+    const cnt = { BUY: 0, SELL: 0, WATCH: 0 };
+    stocks.forEach(s => { cnt[sigOf(s)]++; });
+    const items = [
+      { f: "ALL", cls: "", num: stocks.length, lbl: "TOTAL" },
+      { f: "BUY", cls: "buy", num: cnt.BUY, lbl: "BUY" },
+      { f: "SELL", cls: "sell", num: cnt.SELL, lbl: "SELL" },
+      { f: "WATCH", cls: "watch", num: cnt.WATCH, lbl: "WATCH" }
+    ];
+    document.getElementById("summary").innerHTML = items.map(i =>
+      `<div class="sum-card ${i.cls} ${filter === i.f ? "active" : ""}" data-f="${i.f}">` +
+      `<div class="num">${i.num}</div><div class="lbl">${i.lbl}</div></div>`).join("");
+    document.querySelectorAll(".sum-card").forEach(el =>
+      el.addEventListener("click", () => setFilter(el.dataset.f)));
+  }
+
+  function setFilter(f) {
+    filter = f;
+    document.querySelectorAll("#chips .chip").forEach(c =>
+      c.classList.toggle("active", c.dataset.f === f));
+    render();
+  }
+
+  // ---------- main render ----------
+  function render() {
+    renderSummary();
+    const q = document.getElementById("search").value.trim().toUpperCase();
+    const rows = stocks
+      .filter(s => s.symbol.includes(q) && (filter === "ALL" || sigOf(s) === filter))
+      .sort(cmp);
+
+    document.getElementById("empty").style.display = rows.length ? "none" : "block";
+
+    document.getElementById("tbody").innerHTML = rows.map(s => `
+      <tr>
+        <td class="sym">${s.symbol}</td>
+        <td>${fmt(s.ltp)}</td>
+        <td>${fmt(s.poc)}</td>
+        <td>${fmt(s.vah)}</td>
+        <td>${fmt(s.val)}</td>
+        <td class="left">${badge(sigOf(s))}</td>
+        <td>${fmt(s.short_target)}</td>
+        <td>${fmt(s.long_target)}</td>
+        <td>${fmt(s.stop_loss)}</td>
+        <td>${trendTag(s.trend)}</td>
+        <td>${volCell(s.vol_ratio)}</td>
+        <td>${rrCell(s.rr)}</td>
+        <td>${liqCell(s.liquidity)}</td>
+        <td>${checkCell(s.corp_action)}</td>
+      </tr>`).join("");
+
+    document.getElementById("cards").innerHTML = rows.map(s => `
+      <div class="card">
+        <div class="card-top"><span class="sym">${s.symbol}</span>${badge(sigOf(s))}</div>
+        <div class="card-ltp">${fmt(s.ltp)} ${trendTag(s.trend)}</div>
+        <div class="grid">
+          <div><small>POINT</small>${fmt(s.poc)}</div>
+          <div><small>VHIGH</small>${fmt(s.vah)}</div>
+          <div><small>VLOW</small>${fmt(s.val)}</div>
+          <div><small>SHORT</small>${fmt(s.short_target)}</div>
+          <div><small>LONG</small>${fmt(s.long_target)}</div>
+          <div><small>SL</small>${fmt(s.stop_loss)}</div>
+        </div>
+        <div class="card-chips">
+          ${s.vol_ratio !== null && s.vol_ratio !== undefined ? `<span class="cchip">Vol ${s.vol_ratio}x</span>` : ""}
+          ${s.rr !== null && s.rr !== undefined ? `<span class="cchip">R:R ${s.rr}</span>` : ""}
+          ${s.liquidity === "Low" ? `<span class="tag warn">Low liquidity</span>` : ""}
+          ${s.corp_action ? `<span class="tag down">Check split/bonus</span>` : ""}
+        </div>
+      </div>`).join("");
+  }
+
+  // ---------- events ----------
+  document.querySelectorAll("#thead-row th").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.key;
+      sortDir = (sortKey === key) ? -sortDir : 1;
+      sortKey = key;
+      render();
+    });
+  });
+
+  document.querySelectorAll("#chips .chip").forEach(c =>
+    c.addEventListener("click", () => setFilter(c.dataset.f)));
+
+  document.getElementById("search").addEventListener("input", render);
+
+  document.getElementById("sortSel").addEventListener("change", e => {
+    sortKey = e.target.value;
+    sortDir = (sortKey === "rr" || sortKey === "vol_ratio" || sortKey === "ltp") ? -1 : 1;
+    render();
+  });
+
+  render();
+</script>
 </body>
 </html>
