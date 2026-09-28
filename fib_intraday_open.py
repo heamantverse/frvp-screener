@@ -3,9 +3,16 @@ Intraday Fib Open Alert – Nifty + BankNifty + Sensex
 Fakt e instrument process thay je nu manual VLOW/VHIGH Telegram par
 moklyu hoy (website/Telegram → PythonAnywhere). Jena manual levels
 nathi e instrument skip thai jay — auto previous-day fallback nathi.
-Level names VRSuccessful indicator jeva j (website na FIB_RATIOS_NAMED
-sathe match thay che)
 Alert within ~5 mins of market open
+
+Message ma fakt aa 6 levels dekhay:
+  1.618  Golden Reversal T1
+  1.0    Break up
+  0.618  Golden Reversal
+  0.0    Breakdown
+ -0.272  Day Low
+ -0.618  Bounce Back
+Prediction/Notes logic pehla jevi j chhe (badha levels internally calculate thay che).
 """
 
 import os
@@ -40,20 +47,25 @@ INSTRUMENTS = [
 INTERVAL = "THREE_MINUTE"
 TOLERANCE_PCT = 0.20
 
-# Same names/ratios as app.py (website) na FIB_RATIOS_NAMED — VRSuccessful indicator style
+# Badha levels internally calculate thay (prediction logic mate), pan message ma
+# fakt DISPLAY_RATIOS vada j dekhay.
 FIB_LEVELS = [
-    (1.618, "Potential Target 2"),
+    (1.618, "Golden Reversal T1"),
     (1.272, "Potential Target 1"),
-    (1.000, "Potential Break out"),
+    (1.000, "Break up"),
     (0.786, "Potential sell Reversal"),
-    (0.618, "Reversal Zone"),
+    (0.618, "Golden Reversal"),
     (0.500, "Mid Zone"),
     (0.382, "Reaction Zone"),
     (0.236, "Potential Buy Reversal"),
-    (0.000, "Break down"),
-    (-0.272, "Potential Target 1"),
+    (0.000, "Breakdown"),
+    (-0.272, "Day Low"),
+    (-0.618, "Bounce Back"),
     (-1.618, "Potential Target 2"),
 ]
+
+# Message ma je levels batavvana (upar thi niche, price order ma)
+DISPLAY_RATIOS = [1.618, 1.0, 0.618, 0.0, -0.272, -0.618]
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -172,10 +184,10 @@ def analyze(candle, fib_levels, mid):
     tol = o * (TOLERANCE_PCT / 100)
 
     lvl_buy_rev = get_level(fib_levels, 0.236)     # Potential Buy Reversal
-    lvl_rev_zone = get_level(fib_levels, 0.618)    # Reversal Zone
-    lvl_breakout = get_level(fib_levels, 1.000)    # Potential Break out
+    lvl_rev_zone = get_level(fib_levels, 0.618)    # Golden Reversal
+    lvl_breakout = get_level(fib_levels, 1.000)    # Break up
     lvl_target1 = get_level(fib_levels, 1.272)     # Potential Target 1
-    lvl_target2 = get_level(fib_levels, 1.618)     # Potential Target 2
+    lvl_target2 = get_level(fib_levels, 1.618)     # Golden Reversal T1
 
     strength = lvl_buy_rev and l > lvl_buy_rev["price"]
 
@@ -190,16 +202,16 @@ def analyze(candle, fib_levels, mid):
         prediction.append("Shallow pullback → uptrend continue chance high")
 
     if near(o, lvl_rev_zone):
-        notes.append("🔄 Open at Reversal Zone (0.618)")
+        notes.append("🔄 Open at Golden Reversal")
         prediction.append("Strong reaction zone. Possible early pause/reversal.")
     if near(o, lvl_target1):
-        notes.append("⚠️ Open at Potential Target 1 (1.272)")
+        notes.append("⚠️ Open at Potential Target 1")
         prediction.append("Decision zone. Breakout = continuation, Rejection = pullback.")
     if near(o, lvl_target2):
-        notes.append("🔻 Open at Potential Target 2 (1.618)")
+        notes.append("🔻 Open at Golden Reversal T1")
         prediction.append("Exhaustion zone. High chance of reversal.")
     if near(o, lvl_breakout):
-        notes.append("📌 Open at Potential Break out")
+        notes.append("📌 Open at Break up")
         prediction.append("Range extreme. Directional move expected.")
 
     if not notes:
@@ -289,8 +301,11 @@ def main():
         for p in r["prediction"]:
             lines.append(f"• {p}")
         lines.append(f"VLOW: {r['vlow']} | VHIGH: {r['vhigh']}")
-        for lvl in r["fib_levels"]:
-            lines.append(f"{lvl['name']}: {lvl['price']}")
+        # Fakt tamara mangya te 6 levels (upar thi niche)
+        for ratio in DISPLAY_RATIOS:
+            lvl = get_level(r["fib_levels"], ratio)
+            if lvl:
+                lines.append(f"{lvl['name']}: {lvl['price']}")
         lines.append("")
 
     msg = "\n".join(lines)
