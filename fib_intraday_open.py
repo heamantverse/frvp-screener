@@ -202,16 +202,16 @@ def analyze(candle, fib_levels, mid):
         prediction.append("Shallow pullback → uptrend continue chance high")
 
     if near(o, lvl_rev_zone):
-        notes.append("🔄 Open at Golden Reversal")
+        notes.append(f"🔄 Open at Golden Reversal ({lvl_rev_zone['price']})")
         prediction.append("Strong reaction zone. Possible early pause/reversal.")
     if near(o, lvl_target1):
-        notes.append("⚠️ Open at Potential Target 1")
+        notes.append(f"⚠️ Open at Potential Target 1 ({lvl_target1['price']})")
         prediction.append("Decision zone. Breakout = continuation, Rejection = pullback.")
     if near(o, lvl_target2):
-        notes.append("🔻 Open at Golden Reversal T1")
+        notes.append(f"🔻 Open at Golden Reversal T1 ({lvl_target2['price']})")
         prediction.append("Exhaustion zone. High chance of reversal.")
     if near(o, lvl_breakout):
-        notes.append("📌 Open at Break up")
+        notes.append(f"📌 Open at Break up ({lvl_breakout['price']})")
         prediction.append("Range extreme. Directional move expected.")
 
     if not notes:
