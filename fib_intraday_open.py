@@ -3,23 +3,20 @@ Intraday Fib Open Alert – Nifty + BankNifty + Sensex
 Fakt e instrument process thay je nu manual VLOW/VHIGH Telegram par
 moklyu hoy (website/Telegram → PythonAnywhere). Jena manual levels
 nathi e instrument skip thai jay — auto previous-day fallback nathi.
-Alert within ~5 mins of market open
 
-Message ma fakt aa 6 levels dekhay:
-  1.618  Golden Reversal T1
-  1.0    Break up
-  0.618  Golden Reversal
-  0.0    Breakdown
- -0.272  Day Low
- -0.618  Bounce Back
-Prediction/Notes logic pehla jevi j chhe (badha levels internally calculate thay che).
+Logic (pehli 3-min candle na O/H/L/C par):
+  1. Candle Breakdown/Break up sathe kevi vartay (accepted / fake) e classify thay
+  2. Candle no size Fib range sathe compare thay (expansion hoy to chase na karvu)
+  3. Entry / SL / aagal na 2 targets / R:R plan banave
+Message ma fakt 6 levels dekhay (naam + price, ratio nahi):
+  Golden Reversal T1, Break up, Golden Reversal, Breakdown, Day Low, Bounce Back
 """
 
 import os
 import time
 import requests
 import pyotp
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from SmartApi import SmartConnect
 
@@ -45,29 +42,37 @@ INSTRUMENTS = [
 ]
 
 INTERVAL = "THREE_MINUTE"
-TOLERANCE_PCT = 0.20
 
-# Badha levels internally calculate thay (prediction logic mate), pan message ma
-# fakt DISPLAY_RATIOS vada j dekhay.
+# Level touch/near tolerance = Fib range no 10% (ochhama ochhu open na 0.01%)
+NEAR_PCT_OF_RANGE = 0.10
+NEAR_MIN_PCT_OF_PRICE = 0.0001
+# Candle range, Fib range thi aatla gana vadhu hoy to "expansion candle"
+EXPANSION_MULT = 1.5
+# R:R aa thi ochhu hoy to skip/wait no warning
+MIN_RR = 1.5
+
+# Badha levels internally calculate thay (analysis mate); message ma fakt DISPLAY_RATIOS dekhay.
+# 0.25 / 0.75 chart indicator sathe match che.
 FIB_LEVELS = [
     (1.618, "Golden Reversal T1"),
     (1.272, "Potential Target 1"),
     (1.000, "Break up"),
-    (0.786, "Potential sell Reversal"),
+    (0.750, "Potential sell Reversal"),
     (0.618, "Golden Reversal"),
     (0.500, "Mid Zone"),
     (0.382, "Reaction Zone"),
-    (0.236, "Potential Buy Reversal"),
+    (0.250, "Potential Buy Reversal"),
     (0.000, "Breakdown"),
     (-0.272, "Day Low"),
     (-0.618, "Bounce Back"),
     (-1.618, "Potential Target 2"),
 ]
 
-# Message ma je levels batavvana (upar thi niche, price order ma)
+# Message ma je levels batavvana (upar thi niche)
 DISPLAY_RATIOS = [1.618, 1.0, 0.618, 0.0, -0.272, -0.618]
 
 IST = ZoneInfo("Asia/Kolkata")
+
 
 def login():
     print("Logging in...")
@@ -78,6 +83,7 @@ def login():
         raise SystemExit(f"Login failed: {data}")
     print("Login successful")
     return smart_api
+
 
 def send_telegram(message: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -90,6 +96,7 @@ def send_telegram(message: str):
         print(f"Telegram sent: {r.status_code}")
     except Exception as e:
         print(f"Telegram error: {e}")
+
 
 def fetch_manual_levels():
     """PythonAnywhere (website/Telegram) par save thayela VLOW/VHIGH levie.
@@ -108,6 +115,7 @@ def fetch_manual_levels():
     except Exception as e:
         print(f"Manual levels fetch error: {e}")
     return {}
+
 
 def fetch_opening_candle(smart_api, token, exchange):
     print(f"Fetching today's opening candle for token {token} ({exchange})")
@@ -140,6 +148,7 @@ def fetch_opening_candle(smart_api, token, exchange):
     print("Failed to fetch opening candle")
     return None
 
+
 def calculate_fib_levels(vlow, vhigh):
     """Actual precise calculation — round figures nahi, 2 decimal j."""
     rng = vhigh - vlow
@@ -147,60 +156,125 @@ def calculate_fib_levels(vlow, vhigh):
         return []
     return [{"ratio": r, "name": n, "price": round(vlow + r * rng, 2)} for r, n in FIB_LEVELS]
 
+
 def get_level(fib_levels, ratio):
     for f in fib_levels:
         if abs(f["ratio"] - ratio) < 0.001:
             return f
     return None
 
-def generate_trade_idea(o, fib_levels, bias):
-    """Nearby support/resistance levels parthi ek concrete idea banave che —
-    kya level ni raah jovi, CE/PE levu ke nahi, ane target kya. Educational
-    hint j chhe, final call/timing tamare jate levano."""
-    sorted_lvls = sorted(fib_levels, key=lambda l: l["price"])
-    below = [l for l in sorted_lvls if l["price"] < o]
-    above = [l for l in sorted_lvls if l["price"] > o]
-    support = below[-1] if below else None
-    resistance = above[0] if above else None
-    target_up = above[1] if len(above) > 1 else resistance
-    target_down = below[-2] if len(below) > 1 else support
 
-    if bias == "Bullish" and support:
-        target = resistance or target_up
-        idea = (f"📈 {support['name']} (~{support['price']}) par hold/bounce ni raah jovi — "
-                f"confirm thay pachi CE consider karo, target {target['name']} (~{target['price']}) "
-                f"aas-pas. Confirmation vagar entry na levo.")
-    elif bias == "Bearish" and resistance:
-        target = support or target_down
-        idea = (f"📉 {resistance['name']} (~{resistance['price']}) par rejection ni raah jovi — "
-                f"confirm thay pachi PE consider karo, target {target['name']} (~{target['price']}) "
-                f"aas-pas. Confirmation vagar entry na levo.")
+def nearest_level_within(fib_levels, price, tol):
+    best = None
+    for f in fib_levels:
+        d = abs(f["price"] - price)
+        if d <= tol and (best is None or d < best[0]):
+            best = (d, f)
+    return best[1] if best else None
+
+
+def levels_beyond(fib_levels, price, tol, above=True, n=2):
+    """price thi upar (above=True) ke niche (above=False) na nazdik na n levels, nazdik thi door."""
+    lv = sorted(fib_levels, key=lambda x: x["price"])
+    if above:
+        return [x for x in lv if x["price"] > price + tol][:n]
+    below = [x for x in lv if x["price"] < price - tol]
+    return list(reversed(below))[:n]
+
+
+def adjacent_level(fib_levels, price, tol, above=True):
+    r = levels_beyond(fib_levels, price, tol, above, 1)
+    return r[0] if r else None
+
+
+def build_plan(direction, setup, candle, fib_levels, tol, expansion, L0, L1):
+    """Entry / SL / aagal na 2 targets / R:R. Fakt PE ke CE direction mate."""
+    o, h, l, c = candle["open"], candle["high"], candle["low"], candle["close"]
+    is_pe = direction == "PE"
+    accepted = setup in ("Breakdown accepted", "Breakout accepted")
+
+    if accepted and expansion:
+        # Candle bahu moti — chase nahi, broken level na retest ni raah
+        broken = L0 if is_pe else L1
+        entry = broken["price"]
+        entry_txt = f"{broken['name']} ({entry}) par pullback/retest ma {'sell' if is_pe else 'buy'}"
+        adj = adjacent_level(fib_levels, entry, tol, above=is_pe)
+        sl = adj["price"] if adj else (h if is_pe else l)
+        sl_txt = adj["name"] if adj else ("candle high" if is_pe else "candle low")
+    elif accepted:
+        broken = L0 if is_pe else L1
+        entry = l if is_pe else h
+        entry_txt = f"candle {'low' if is_pe else 'high'} ({entry}) todi ne"
+        sl = broken["price"]
+        sl_txt = broken["name"]
     else:
-        idea = "Clear nearby level nathi mali — abhi wait-and-watch rakho."
-    return idea
+        entry = l if is_pe else h
+        entry_txt = f"candle {'low' if is_pe else 'high'} ({entry}) todi ne"
+        sl = h if is_pe else l
+        sl_txt = "candle high" if is_pe else "candle low"
 
-def analyze(candle, fib_levels, mid):
-    o, h, l = candle["open"], candle["high"], candle["low"]
-    tol = o * (TOLERANCE_PCT / 100)
+    targets = levels_beyond(fib_levels, entry, tol, above=not is_pe, n=2)
+    risk = abs(entry - sl)
 
-    lvl_buy_rev = get_level(fib_levels, 0.236)     # Potential Buy Reversal
-    lvl_rev_zone = get_level(fib_levels, 0.618)    # Golden Reversal
-    lvl_breakout = get_level(fib_levels, 1.000)    # Break up
-    lvl_target1 = get_level(fib_levels, 1.272)     # Potential Target 1
-    lvl_target2 = get_level(fib_levels, 1.618)     # Golden Reversal T1
+    parts = [f"Entry {entry_txt}", f"SL {round(sl, 2)} ({sl_txt})"]
+    if targets:
+        parts.append("Target " + " → ".join(f"{t['name']} ({t['price']})" for t in targets))
+    else:
+        parts.append("Target: aagal koi level nathi, SL trail karo")
 
-    strength = lvl_buy_rev and l > lvl_buy_rev["price"]
+    rr_list = []
+    if risk > 0.0001:
+        for t in targets:
+            rr_list.append(round(abs(t["price"] - entry) / risk, 1))
+    if rr_list:
+        parts.append("R:R " + " / ".join(str(x) for x in rr_list))
+    line = f"{'📉 PE' if is_pe else '📈 CE'} plan: " + " | ".join(parts)
+    if rr_list and rr_list[-1] < MIN_RR:
+        line += " ⚠️ R:R kam — skip/wait"
+    if accepted and expansion:
+        line += " (retest na aave to trade nahi)"
+    return line
 
-    def near(price, level):
-        return level and abs(price - level["price"]) <= tol
+
+def analyze(candle, fib_levels, vlow, vhigh):
+    o, h, l, c = candle["open"], candle["high"], candle["low"], candle["close"]
+    fib_range = vhigh - vlow
+    tol = max(NEAR_PCT_OF_RANGE * fib_range, o * NEAR_MIN_PCT_OF_PRICE)
+
+    L0 = get_level(fib_levels, 0.0)        # Breakdown
+    L1 = get_level(fib_levels, 1.0)        # Break up
+    mid = get_level(fib_levels, 0.5)["price"]
+    L0p, L1p = L0["price"], L1["price"]
+
+    rng = max(h - l, 0.01)
+    body_pct = abs(c - o) / rng
+    upper_wick = (h - max(o, c)) / rng
+    lower_wick = (min(o, c) - l) / rng
+    expansion = rng > EXPANSION_MULT * fib_range
 
     notes = []
     prediction = []
 
-    if strength:
+    # ---- Open kya chhe (range-based tolerance) ----
+    def near(price, level):
+        return level and abs(price - level["price"]) <= tol
+
+    if o > L1p + tol:
+        notes.append(f"⬆️ Gap up open ({L1['name']} {L1p} ni upar)")
+    elif o < L0p - tol:
+        notes.append(f"⬇️ Gap down open ({L0['name']} {L0p} ni niche)")
+
+    lvl_buy_rev = get_level(fib_levels, 0.25)
+    if lvl_buy_rev and l > lvl_buy_rev["price"]:
         notes.append("✅ Strength (Low above Potential Buy Reversal)")
         prediction.append("Shallow pullback → uptrend continue chance high")
 
+    lvl_rev_zone = get_level(fib_levels, 0.618)
+    lvl_target1 = get_level(fib_levels, 1.272)
+    lvl_target2 = get_level(fib_levels, 1.618)
+    if near(o, L0):
+        notes.append(f"🎯 Open at Breakdown ({L0p})")
+        prediction.append("Range bottom. Close niche = downside continuation, reclaim = bounce. Candle close par nirbhar.")
     if near(o, lvl_rev_zone):
         notes.append(f"🔄 Open at Golden Reversal ({lvl_rev_zone['price']})")
         prediction.append("Strong reaction zone. Possible early pause/reversal.")
@@ -210,22 +284,65 @@ def analyze(candle, fib_levels, mid):
     if near(o, lvl_target2):
         notes.append(f"🔻 Open at Golden Reversal T1 ({lvl_target2['price']})")
         prediction.append("Exhaustion zone. High chance of reversal.")
-    if near(o, lvl_breakout):
-        notes.append(f"📌 Open at Break up ({lvl_breakout['price']})")
+    if near(o, L1):
+        notes.append(f"📌 Open at Break up ({L1p})")
         prediction.append("Range extreme. Directional move expected.")
-
     if not notes:
         notes.append("No major Fib confluence at open")
-        prediction.append("Wait for clearer reaction at key levels.")
 
-    bias = "Bullish" if o > mid else "Bearish"
-    prediction.append(generate_trade_idea(o, fib_levels, bias))
+    # ---- Candle setup classify ----
+    setup = None
+    direction = "WAIT"
+    reason = ""
 
-    return {
-        "bias": bias,
-        "notes": notes,
-        "prediction": prediction,
-    }
+    if c < L0p - tol and l < L0p:
+        setup, direction = "Breakdown accepted", "PE"
+        setup_txt = f"Breakdown accepted — candle Breakdown ({L0p}) ni niche close thayi"
+    elif l < L0p - tol and c >= L0p:
+        setup, direction = "Fake breakdown", "CE"
+        setup_txt = f"Fake breakdown — Breakdown ni niche gayo pan pachu upar close thayo"
+    elif c > L1p + tol and h > L1p:
+        setup, direction = "Breakout accepted", "CE"
+        setup_txt = f"Breakout accepted — candle Break up ({L1p}) ni upar close thayi"
+    elif h > L1p + tol and c <= L1p:
+        setup, direction = "Fake breakout", "PE"
+        setup_txt = f"Fake breakout — Break up ni upar gayo pan pachu niche close thayo"
+    else:
+        rej = None
+        if lower_wick >= 0.5:
+            lv = nearest_level_within(fib_levels, l, tol)
+            if lv:
+                rej = ("CE", lv, "support")
+        if not rej and upper_wick >= 0.5:
+            lv = nearest_level_within(fib_levels, h, tol)
+            if lv:
+                rej = ("PE", lv, "resistance")
+        if rej:
+            direction = rej[0]
+            setup = "Level rejection"
+            setup_txt = f"{rej[1]['name']} ({rej[1]['price']}) par rejection ({rej[2]})"
+        elif body_pct >= 0.5 and rng >= 0.35 * fib_range and ((c > o and c > mid) or (c < o and c < mid)):
+            direction = "CE" if c > o else "PE"
+            setup = "Directional candle"
+            setup_txt = "Range ni andar directional candle"
+        else:
+            setup = "Indecision"
+            setup_txt = "Indecision candle — clear direction nathi"
+            reason = "nani body / range ni vachche"
+
+    if direction in ("PE", "CE"):
+        if expansion:
+            prediction.append(
+                f"⚡ Pehli candle bahu moti (range {round(rng)} vs Fib range {round(fib_range)}) — "
+                f"chase na karo, Fib extension levels par bharoso ochho.")
+        prediction.append(build_plan(direction, setup, candle, fib_levels, tol, expansion, L0, L1))
+    else:
+        prediction.append(
+            f"⏸️ Clear setup nathi ({reason}) — candle high ({h}) ke low ({l}) no break jova sudhi wait.")
+
+    bias = {"PE": "Bearish", "CE": "Bullish"}.get(direction, "Neutral")
+    return {"bias": bias, "setup": setup_txt, "notes": notes, "prediction": prediction}
+
 
 def process_index(smart_api, name, token, exchange, manual):
     print(f"\n----- Processing {name} -----")
@@ -236,25 +353,49 @@ def process_index(smart_api, name, token, exchange, manual):
           f"(source={manual.get('source')}, updated={manual.get('updated')})")
 
     fib_levels = calculate_fib_levels(vlow, vhigh)
-    mid = get_level(fib_levels, 0.5)["price"]  # Mid Zone j POC nu kaam kare che
+    if not fib_levels:
+        print(f"{name}: VHIGH <= VLOW, skip")
+        return None
 
     candle = fetch_opening_candle(smart_api, token, exchange)
     if candle is None:
         print(f"{name}: Opening candle failed")
         return None
 
-    analysis = analyze(candle, fib_levels, mid)
+    analysis = analyze(candle, fib_levels, vlow, vhigh)
 
     return {
         "name": name,
-        "open": candle["open"],
-        "high": candle["high"],
-        "low": candle["low"],
+        "candle": candle,
         "vlow": vlow,
         "vhigh": vhigh,
         "fib_levels": fib_levels,
         **analysis,
     }
+
+
+def build_message(now, results):
+    lines = [f"<b>📊 Fib Open Alert</b>\n{now.strftime('%d-%b %H:%M')} IST\n"]
+    for r in results:
+        c = r["candle"]
+        lines.append(f"<b>{r['name']}</b>")
+        lines.append(f"O: <b>{c['open']}</b> | H: {c['high']} | L: {c['low']} | C: {c['close']}")
+        lines.append(f"Setup: {r['setup']}")
+        lines.append(f"Bias: {r['bias']}")
+        lines.append("Notes: " + " | ".join(r["notes"]))
+        lines.append("Prediction:")
+        for p in r["prediction"]:
+            lines.append(f"• {p}")
+        lines.append(f"VLOW: {r['vlow']} | VHIGH: {r['vhigh']}")
+        # Fakt tamara mangya te 6 levels (upar thi niche), ratio vagar
+        for ratio in DISPLAY_RATIOS:
+            lvl = get_level(r["fib_levels"], ratio)
+            if lvl:
+                lines.append(f"{lvl['name']}: {lvl['price']}")
+        lines.append("")
+    lines.append("Note: Aa scenario/filter chhe, kharidva-vechvani salah nathi.")
+    return "\n".join(lines)
+
 
 def main():
     now = datetime.now(IST)
@@ -290,27 +431,9 @@ def main():
         print("No results")
         return
 
-    lines = [f"<b>📊 Fib Open Alert</b>\n{now.strftime('%d-%b %H:%M')} IST\n"]
-
-    for r in results:
-        lines.append(f"<b>{r['name']}</b>")
-        lines.append(f"O: <b>{r['open']}</b> | H: {r['high']} | L: {r['low']}")
-        lines.append(f"Bias: {r['bias']}")
-        lines.append("Notes: " + " | ".join(r["notes"]))
-        lines.append("Prediction:")
-        for p in r["prediction"]:
-            lines.append(f"• {p}")
-        lines.append(f"VLOW: {r['vlow']} | VHIGH: {r['vhigh']}")
-        # Fakt tamara mangya te 6 levels (upar thi niche)
-        for ratio in DISPLAY_RATIOS:
-            lvl = get_level(r["fib_levels"], ratio)
-            if lvl:
-                lines.append(f"{lvl['name']}: {lvl['price']}")
-        lines.append("")
-
-    msg = "\n".join(lines)
-    send_telegram(msg)
+    send_telegram(build_message(now, results))
     print("Full alert sent")
+
 
 if __name__ == "__main__":
     main()
