@@ -71,6 +71,25 @@
   }
   button:hover { opacity: .9; }
 
+  .suggest-wrap { position: relative; flex: 1; min-width: 160px; }
+  .suggest-wrap input[type="text"] { width: 100%; }
+  .suggest {
+    display: none; position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 20;
+    background: var(--panel); border: 1px solid var(--grid); border-radius: 4px;
+    max-height: 320px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  }
+  .sg {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 9px 14px; cursor: pointer; font-family: var(--font-mono); font-size: .9rem;
+    border-left: 2px solid transparent; border-bottom: 1px solid var(--grid);
+  }
+  .sg:last-child { border-bottom: none; }
+  .sg:hover, .sg.on { background: var(--panel-hi); border-left-color: var(--accent); }
+  .sg em {
+    font-style: normal; font-size: .66rem; color: var(--accent);
+    border: 1px solid rgba(240,180,41,.4); border-radius: 3px; padding: 0 6px;
+  }
+
   .msg { padding: 9px 13px; border-radius: 4px; font-size: .82rem; font-family: var(--font-mono); }
   .msg.error { background: rgba(234,57,67,.12); color: var(--bear); }
   .msg.note { background: rgba(240,180,41,.1); color: var(--accent); }
@@ -111,7 +130,11 @@
     </div>
     <form method="GET" action="/stock">
       <input type="hidden" name="type" value="{{ level_type }}">
-      <input type="text" name="symbol" placeholder="dat. RELIANCE, TCS, INFY" value="{{ symbol }}" autofocus>
+      <div class="suggest-wrap">
+        <input type="text" id="symbolInput" name="symbol" placeholder="Symbol lakho — dat. REL, TCS, INFY"
+               value="{{ symbol }}" autocomplete="off" autocapitalize="characters" spellcheck="false" autofocus>
+        <div class="suggest" id="suggest"></div>
+      </div>
       <button type="submit">SEARCH</button>
     </form>
   </div>
@@ -157,5 +180,61 @@
   </div>
   {% endif %}
 </div>
+
+<script>
+(function () {
+  const input = document.getElementById("symbolInput");
+  const box = document.getElementById("suggest");
+  const form = input.closest("form");
+  let items = [], active = -1, timer = null, seq = 0;
+
+  function hide() { box.style.display = "none"; active = -1; }
+
+  function render() {
+    if (!items.length) { hide(); return; }
+    box.innerHTML = items.map((it, i) =>
+      `<div class="sg ${i === active ? "on" : ""}" data-i="${i}"><span>${it.s}</span>${it.fno ? "<em>F&amp;O</em>" : ""}</div>`
+    ).join("");
+    box.style.display = "block";
+  }
+
+  function pick(i) {
+    input.value = items[i].s;
+    hide();
+    form.submit();
+  }
+
+  async function fetchSuggest() {
+    const q = input.value.trim();
+    if (!q) { items = []; hide(); return; }
+    const mine = ++seq;
+    try {
+      const r = await fetch("/stock/suggest?q=" + encodeURIComponent(q), { credentials: "same-origin" });
+      if (!r.ok) return;
+      const data = await r.json();
+      if (mine !== seq) return;          // junu response ignore karo
+      items = data; active = -1; render();
+    } catch (e) { /* suggestions optional che, chupchap ignore */ }
+  }
+
+  input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(fetchSuggest, 120); });
+
+  input.addEventListener("keydown", e => {
+    if (box.style.display !== "block") return;
+    if (e.key === "ArrowDown") { e.preventDefault(); active = (active + 1) % items.length; render(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); active = (active - 1 + items.length) % items.length; render(); }
+    else if (e.key === "Enter" && active >= 0) { e.preventDefault(); pick(active); }
+    else if (e.key === "Escape") { hide(); }
+  });
+
+  // pointerdown: mouse + touch banne mate, blur thay te pehla click pakde
+  box.addEventListener("pointerdown", e => {
+    const el = e.target.closest(".sg");
+    if (el) { e.preventDefault(); pick(Number(el.dataset.i)); }
+  });
+
+  input.addEventListener("blur", () => setTimeout(hide, 120));
+})();
+</script>
 </body>
 </html>
