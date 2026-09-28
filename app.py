@@ -527,9 +527,7 @@ def fib_api(secret):
 # INTRADAY = gai kal na high-low thi Fib + aaj ni opening candle live analysis.
 # ============================================================
 
-# Symbol -> token map have GitHub thi j male chhe (screener_job.py roj banave che),
-# PythonAnywhere free plan thi margincalculator.angelone.in ne direct call thai shakto nathi (403).
-SYMBOL_MAP_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/symbol_token_map.json"
+INSTRUMENT_MASTER_URL = "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json"
 _instrument_cache = {"map": None, "time": 0}
 INSTRUMENT_CACHE_SECONDS = 6 * 3600  # 6 kalak cache (aakhi master list moti chhe)
 
@@ -541,25 +539,16 @@ WEEK52_NUM_BINS = 24
 
 
 def load_symbol_token_map():
-    """NSE equity na badha symbols -> Angel token, GitHub thi (screener_job.py roj banave che,
-    6 kalak cache thi — moti file, roj-roj na mangavi)."""
+    """NSE equity na badha symbols -> Angel token, 6 kalak cache thi (moti file, roj-roj na mangavi)."""
     if _instrument_cache["map"] and time.time() - _instrument_cache["time"] < INSTRUMENT_CACHE_SECONDS:
         return _instrument_cache["map"]
-
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise RuntimeError("GITHUB_TOKEN set nathi")
-
-    resp = requests.get(
-        SYMBOL_MAP_URL,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github.raw+json",
-        },
-        timeout=20,
-    )
+    resp = requests.get(INSTRUMENT_MASTER_URL, timeout=60)
     resp.raise_for_status()
-    mapping = resp.json()
+    master = resp.json()
+    mapping = {}
+    for row in master:
+        if row.get("exch_seg") == "NSE" and str(row.get("symbol", "")).endswith("-EQ"):
+            mapping[row["symbol"][:-3]] = str(row["token"])
     _instrument_cache["map"] = mapping
     _instrument_cache["time"] = time.time()
     return mapping
@@ -697,6 +686,41 @@ def fetch_previous_day_range(smart_api, token, exchange="NSE"):
     return None
 
 
+_symbols_fail_until = 0  # Angel list load fail thay to 5 min sudhi vaar-vaar retry na kare
+
+
+def get_all_symbols():
+    """Suggestions mate badha NSE symbols. Angel ni list na male (dat. server ma
+    internet restrict hoy) to aaj na screener (F&O) ni list par fall back."""
+    global _symbols_fail_until
+    if time.time() >= _symbols_fail_until:
+        try:
+            return list(load_symbol_token_map().keys())
+        except Exception as e:
+            print(f"Symbol list load fail: {e}")
+            _symbols_fail_until = time.time() + 300
+    try:
+        return [s["symbol"] for s in load_results().get("stocks", [])]
+    except Exception:
+        return []
+
+
+@app.route("/stock/suggest")
+def stock_suggest():
+    q = request.args.get("q", "").strip().upper()
+    if not q:
+        return jsonify([])
+    symbols = get_all_symbols()
+    try:
+        in_screener = {s["symbol"] for s in load_results().get("stocks", [])}
+    except Exception:
+        in_screener = set()
+    # pehla jya symbol q thi shuru thay, pachi jema q aave; banne ma F&O pehla
+    starts = sorted((s for s in symbols if s.startswith(q)), key=lambda s: (s not in in_screener, s))
+    contains = sorted((s for s in symbols if q in s and not s.startswith(q)), key=lambda s: (s not in in_screener, s))
+    return jsonify([{"s": s, "fno": s in in_screener} for s in (starts + contains)[:10]])
+
+
 @app.route("/stock", methods=["GET"])
 def stock_search():
     symbol = request.args.get("symbol", "").strip().upper()
@@ -709,17 +733,28 @@ def stock_search():
     note = None
 
     if symbol:
-        token_map = load_symbol_token_map()
-        token = token_map.get(symbol)
+        cached = find_in_results(symbol) if level_type == "WEEK52" else None
 
-        if not token:
-            error = f"'{symbol}' NSE ma nathi malyu — symbol sacho lakho (dat. RELIANCE, TCS)"
-        elif level_type == "WEEK52":
-            cached = find_in_results(symbol)
-            if cached:
-                val, vah, ltp = cached["val"], cached["vah"], cached.get("ltp")
-                note = "Aaje na screener run mathi (already calculate thayelu)"
-            else:
+        if cached:
+            # Screener already calculate kari chukyu hoy to Angel ni jarur j nathi
+            val, vah, ltp = cached["val"], cached["vah"], cached.get("ltp")
+            note = "Aaje na screener run mathi (already calculate thayelu)"
+            result = {"symbol": symbol, "val": val, "vah": vah, "ltp": ltp,
+                      "levels": calculate_fib_levels(val, vah)}
+        else:
+            token, token_ok = None, True
+            try:
+                token = load_symbol_token_map().get(symbol)
+            except Exception as e:
+                print(f"Token map load fail: {e}")
+                token_ok = False
+
+            if not token_ok:
+                error = ("Angel One ni stock list load na thai (server thi internet access restrict hoy shake). "
+                         "Screener ni list na stocks WEEK52 ma haju chalse.")
+            elif not token:
+                error = f"'{symbol}' NSE ma nathi malyu — symbol sacho lakho (dat. RELIANCE, TCS)"
+            elif level_type == "WEEK52":
                 smart_api = login_angel()
                 if not smart_api:
                     error = "Angel One login fail thayu (credentials PythonAnywhere par set chhe ke check karo)"
@@ -731,29 +766,28 @@ def stock_search():
                         error = f"'{symbol}' nu 52-week data na malyu"
                     else:
                         val, vah, ltp = vp["VAL"], vp["VAH"], vp["LTP"]
-            if not error:
-                levels = calculate_fib_levels(val, vah)
-                result = {"symbol": symbol, "val": val, "vah": vah, "ltp": ltp, "levels": levels}
-        else:  # INTRADAY
-            smart_api = login_angel()
-            if not smart_api:
-                error = "Angel One login fail thayu (credentials PythonAnywhere par set chhe ke check karo)"
-            else:
-                rng = fetch_previous_day_range(smart_api, token)
-                if not rng:
-                    error = f"'{symbol}' nu gai kal nu data na malyu"
+                        result = {"symbol": symbol, "val": val, "vah": vah, "ltp": ltp,
+                                  "levels": calculate_fib_levels(val, vah)}
+            else:  # INTRADAY
+                smart_api = login_angel()
+                if not smart_api:
+                    error = "Angel One login fail thayu (credentials PythonAnywhere par set chhe ke check karo)"
                 else:
-                    val, vah = rng["VLOW"], rng["VHIGH"]
-                    levels = calculate_fib_levels(val, vah)
-                    mid_lvl = get_level(levels, 0.5)
-                    live = None
-                    candle = fetch_opening_candle_quick(smart_api, token, "NSE")
-                    if candle and mid_lvl:
-                        live = {"candle": candle, **analyze_open(candle, levels, mid_lvl["price"])}
-                        note = "Gai kal na high-low + aaj ni opening candle thi (live)"
+                    rng = fetch_previous_day_range(smart_api, token)
+                    if not rng:
+                        error = f"'{symbol}' nu gai kal nu data na malyu"
                     else:
-                        note = "Gai kal na high-low thi (aaj ni opening candle nathi mali)"
-                    result = {"symbol": symbol, "val": val, "vah": vah, "ltp": None, "levels": levels, "live": live}
+                        val, vah = rng["VLOW"], rng["VHIGH"]
+                        levels = calculate_fib_levels(val, vah)
+                        mid_lvl = get_level(levels, 0.5)
+                        live = None
+                        candle = fetch_opening_candle_quick(smart_api, token, "NSE")
+                        if candle and mid_lvl:
+                            live = {"candle": candle, **analyze_open(candle, levels, mid_lvl["price"])}
+                            note = "Gai kal na high-low + aaj ni opening candle thi (live)"
+                        else:
+                            note = "Gai kal na high-low thi (aaj ni opening candle nathi mali)"
+                        result = {"symbol": symbol, "val": val, "vah": vah, "ltp": None, "levels": levels, "live": live}
 
     return render_template(
         "stock.html", symbol=symbol, level_type=level_type,
