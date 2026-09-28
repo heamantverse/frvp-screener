@@ -266,7 +266,7 @@ def main():
     manual_levels = {
         name: data["INTRADAY"]
         for name, data in manual_levels_raw.items()
-        if "INTRADAY" in data
+        if isinstance(data, dict) and "INTRADAY" in data
     }
 
     # Fakt e instruments je na manual INTRADAY levels save thayela hoy
