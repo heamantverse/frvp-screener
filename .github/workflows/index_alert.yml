@@ -2,15 +2,20 @@ name: Pre-market Index Alert
 
 on:
   schedule:
-    - cron: '40 3 * * 1-5'   # 9:10 AM IST, Mon-Fri
+    - cron: '30 3 * * 1-5'   # 9:00 AM IST, Mon-Fri
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: index-alert
+  cancel-in-progress: false
+
 jobs:
   index-alert:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,12 +25,15 @@ jobs:
       - name: Install requirements
         run: pip install smartapi-python pyotp logzero websocket-client requests reportlab pandas numpy
 
-      - name: Run alert
+      - name: Wait for Telegram input (till 9:10) and run alert
         env:
           ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
           ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
           ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
           ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          INPUT_DEADLINE_IST: "09:10"
         run: python nifty_banknifty_alert.py
 
       - name: Build PDF and send to Telegram
