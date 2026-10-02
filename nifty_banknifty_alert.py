@@ -1,142 +1,101 @@
 """
-Pre-market Nifty & BankNifty options table.
-Har index mate CE-ATM, CE-ITM, PE-ATM, PE-ITM — chaare options no potano
-data (POC/VAH/VAL, named levels) ane Greeks (delta/theta). Index no potano
-badho named level ladder pan generate thay chhe.
+Pre-market Nifty & BankNifty options alert (Telegram input version).
 
-Zone analysis: price key fib levels (0, 0.236, 0.618, 1.0, 1.272, 1.618,
--0.618, -1.618) ni tolerance range ma aave to chart-observed pattern
-pramane note + prediction generate thay chhe (index level ane dareek
-option level banne mate).
+Flow:
+  1. Login + Greeks (delta/theta) Angel One thi pehla thi j fetch kari lo (wait ni darmiyan).
+  2. Website API thi aajno Telegram input vancho (INPUT_DEADLINE_IST = 09:10 sudhi raah jovo,
+     badhu input aavi jay to vahelu aagal vadho).
+  3. Index + 4 options (CE ATM/ITM, PE ATM/ITM) mate Best Entry, Target, SL kadho.
+  4. index_alert.json lakho -> make_index_alert_pdf.py PDF banave.
+
+Telegram message format (ek j message ma pan chale, alag alag pan chale):
+
+    NIFTY VAL 22522.15 VAH 22590.05   (athva 9:18 alert vala INTRADAY levels)
+    BANKNIFTY VAL 54555.1 VAH 54905.05
+    NIFTY PRICE 22525.65      <- pre-open price (9:10 sudhi ma)
+    BANKNIFTY PRICE 54690.95
+    22550CE VAL 120 VAH 160
+    22500CE VAL 140 VAH 180
+    22550PE VAL 110 VAH 150
+    22600PE VAL 150 VAH 190
+    54700CE VAL 980 VAH 1100     <- BANKNIFTY options pan em j
+    (optional: "NIFTY 22550CE LOW .. HIGH .." athva ant ma "LTP 131" lakhi shako)
 """
 
 import os
+import re
 import time
 import json
-import numpy as np
 import pandas as pd
 import requests
 import pyotp
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from SmartApi import SmartConnect
 from SmartApi.smartExceptions import DataException
+
+IST = ZoneInfo("Asia/Kolkata")
 
 API_KEY = os.environ["ANGEL_API_KEY"]
 CLIENT_CODE = os.environ["ANGEL_CLIENT_ID"]
 PASSWORD = os.environ["ANGEL_PASSWORD"]
 TOTP_SECRET = os.environ["ANGEL_TOTP_SECRET"]
+WEBSITE_URL = os.environ["WEBSITE_URL"].rstrip("/")
+FIB_API_SECRET = os.environ["FIB_API_SECRET"]
+INPUT_DEADLINE_IST = os.environ.get("INPUT_DEADLINE_IST", "09:10")
 
 INSTRUMENT_MASTER_URL = "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json"
 
 INDEXES = [
-    {"name": "NIFTY", "opt_name": "NIFTY", "token": "99926000", "step": 50},
-    {"name": "BANKNIFTY", "opt_name": "BANKNIFTY", "token": "99926009", "step": 100},
+    {"name": "NIFTY", "opt_name": "NIFTY", "token": "99926000"},
+    {"name": "BANKNIFTY", "opt_name": "BANKNIFTY", "token": "99926009"},
 ]
 
+# ============================================================
+# CONFIG â€” Best Entry / Target / SL na badha points aa j jagya e badlo
+# ============================================================
+ENTRY_RATIO = -0.272        # Best Entry = VAL - 0.272 x Range (index ane option banne mate)
+TARGET_EXT = 0.272          # Index target = VAH + 0.272 x Range (CALL) / VAL - 0.272 x Range (PUT)
+SL_RANGE_PCT = 0.30         # Index SL = Price -/+ 30% of Range
+HOLD_DAY_FRACTION = 0.5     # Theta decay ketla divas no ganvo (~3 kalak = 0.5 divas)
+MIN_RR = 1.5                # Aa thi ochho Risk:Reward hoy to "SKIP"
+OPTIONS_PER_INDEX = 4       # CE ATM, CE ITM, PE ATM, PE ITM
+
+# Bias (index price kya level ni nazdik chhe) â€” alert ma faqat CALL/PUT/WATCH dekhase
 BIAS_LEVELS = [
-    (0.0,   "Base Move (bottom)", "PUT"),
-    (0.25,  "Buy Reversal",       "CALL"),
-    (0.75,  "Sell Reversal",      "PUT"),
-    (1.0,   "Base Move (top)",    "CALL"),
-    (1.272, "Stall Zone",         "WATCH"),
+    (0.0,   "PUT"),
+    (0.25,  "CALL"),
+    (0.75,  "PUT"),
+    (1.0,   "CALL"),
+    (1.272, "WATCH"),
 ]
-
-FIB_RATIOS_NAMED = [
-    (1.618, "Golden Reversal"),
-    (1.272, "Stall Zone"),
-    (1.0,   "Base Move"),
-    (0.786, "Deep Zone"),
-    (0.618, "Reversal Zone"),
-    (0.5,   "Mid Zone"),
-    (0.382, "Reaction Zone"),
-    (0.236, "Early Reversal"),
-    (0.0,   "Base Move"),
-    (-0.272, "Day Low Zone"),
-    (-1.618, "Extreme Zone"),
-]
-
-# ------------------------------------------------------------
-# ZONE ANALYSIS — chart par observe thayela patterns
-# (20 historical Sensex charts par manually dorela fib levels
-#  parthi kadhela behavior, dareek ratio mate note + prediction)
-# ------------------------------------------------------------
-
-TOLERANCE_PCT = 0.20  # intraday script jetlu j
-
-ZONE_NOTES = {
-    1.618:  ("GOLDEN REVERSAL / Extension", "Exhaustion zone — high reversal chance"),
-    1.272:  ("STALL ZONE", "Decision zone — breakout continuation or rejection pullback"),
-    1.000:  ("BASE MOVE (top)", "Range extreme — directional move expected"),
-    0.618:  ("GOLDEN REVERSAL", "Strong reaction zone — possible pause/reversal"),
-    0.236:  ("EARLY REVERSAL", "Minor pullback/bounce zone"),
-    0.000:  ("BASE MOVE (bottom)", "Fresh impulsive move origin"),
-    -0.618: ("BOUNCE BACK", "Support zone — bounce back likely"),
-    -1.618: ("IMPULSIVE TARGET", "Extreme support/target zone"),
-}
-
-
-def zone_analysis(price, lo, hi, tolerance_pct=TOLERANCE_PCT):
-    """Price ne dareek key fib level sathe compare kari, tolerance ni andar
-    hoy to chart-pattern pramane note + prediction pacho aape.
-    lo/hi = jena par se fib ladder banyu chhe (index prev-day range athva
-    option nu potanu VAL/VAH)."""
-    if price is None:
-        return {"notes": [], "predictions": []}
-    rng = hi - lo
-    if rng <= 0:
-        return {"notes": [], "predictions": []}
-
-    tol = price * (tolerance_pct / 100)
-    notes, predictions = [], []
-    for ratio, (label, prediction) in ZONE_NOTES.items():
-        lvl_price = lo + rng * ratio
-        if abs(price - lvl_price) <= tol:
-            notes.append(f"{label} ({round(lvl_price, 2)})")
-            predictions.append(prediction)
-
-    if not notes:
-        notes.append("No major Fib confluence")
-        predictions.append("Wait for clearer reaction at key levels")
-
-    return {"notes": notes, "predictions": predictions}
-
 
 OUT_FILE = "index_alert.json"
 
 
+def fib(ratio, lo, hi):
+    return lo + (hi - lo) * ratio
+
+
 # ============================================================
 # RATE-LIMIT SAFE WRAPPER
-# Angel One SmartAPI historical/candle endpoints have a strict
-# per-second/per-minute cap. Jo tame consecutive calls faster
-# thi kariye to "Access denied because of exceeding access rate"
-# error aave chhe. Aa wrapper e error par automatic retry +
-# increasing wait karse.
 # ============================================================
 
 def safe_call(fn, *args, retries=8, base_delay=8, max_wait=60, label="", **kwargs):
-    """Call any smart_api function with retry + backoff on rate-limit errors.
-
-    Pre-market samaye Angel na historical-data server par bhare congestion
-    hoy chhe (ghana users same time e candle data mangta hoy), etle
-    30-40s ni andar rate-limit clear nathi thati — lambi backoff joiye chhe.
-    Worst case total wait ~ 8+16+24+32+40+48+56 = 224s (~3.7 min) per call.
-    """
     for attempt in range(1, retries + 1):
         try:
             return fn(*args, **kwargs)
         except DataException as e:
-            msg = str(e)
-            if "exceeding access rate" in msg and attempt < retries:
+            if "exceeding access rate" in str(e) and attempt < retries:
                 wait = min(base_delay * attempt, max_wait)
-                print(f"[rate-limit] {label} attempt {attempt}/{retries} failed, retrying in {wait}s")
+                print(f"[rate-limit] {label} attempt {attempt}/{retries}, retry in {wait}s")
                 time.sleep(wait)
             else:
                 raise
         except Exception as e:
             if attempt < retries:
                 wait = min(base_delay * attempt, max_wait)
-                print(f"[retry] {label} attempt {attempt}/{retries} error: {e}, retrying in {wait}s")
+                print(f"[retry] {label} attempt {attempt}/{retries} error: {e}, retry in {wait}s")
                 time.sleep(wait)
             else:
                 raise
@@ -151,59 +110,69 @@ def login():
     return smart_api
 
 
-def fib(ratio, lo, hi):
-    return lo + (hi - lo) * ratio
+# ============================================================
+# TELEGRAM INPUT (webhook -> website storage -> API)
+# ============================================================
+
+def assign_options(idx_in, opts):
+    """Option kya index no chhe: prefix hoy to e, nahi to strike index ni nazdik na range thi."""
+    refs = {}
+    for name, d in idx_in.items():
+        if d.get("low") is not None:
+            refs[name] = (d["low"] + d["high"]) / 2
+        elif d.get("price") is not None:
+            refs[name] = d["price"]
+    out = {i["name"]: [] for i in INDEXES}
+    for o in opts:
+        name = o["prefix"]
+        if not name and refs:
+            name = min(refs, key=lambda n: abs(o["strike"] - refs[n]) / refs[n])
+        if name in out:
+            out[name].append(o)
+    for name in out:
+        out[name].sort(key=lambda o: (o["type"], o["strike"]))
+    return out
 
 
-def full_ladder(lo, hi):
-    return [
-        {"name": name, "price": round(fib(ratio, lo, hi), 2)}
-        for ratio, name in FIB_RATIOS_NAMED
-        if fib(ratio, lo, hi) > 0
-    ]
-
-
-def prev_day_range(smart_api, token):
-    end = datetime.now()
-    start = end - timedelta(days=10)
-    resp = safe_call(
-        smart_api.getCandleData,
-        {
-            "exchange": "NSE", "symboltoken": token, "interval": "ONE_DAY",
-            "fromdate": start.strftime("%Y-%m-%d 09:15"),
-            "todate": end.strftime("%Y-%m-%d 15:30"),
-        },
-        label=f"prev_day_range({token})",
-    )
-    rows = resp.get("data") or []
-    if not rows:
-        return None
-    last = rows[-1]
-    return {"date": last[0][:10], "high": float(last[2]), "low": float(last[3]), "close": float(last[4])}
-
-
-def get_ltp(smart_api, token, name, exchange="NSE"):
+def collect_inputs():
+    """Tamari website (PythonAnywhere) par webhook thi save thayelo aajno input."""
+    data = {}
     try:
-        resp = safe_call(smart_api.ltpData, exchange, name, token, label=f"ltp({name})")
-        if resp.get("status") and resp.get("data"):
-            return float(resp["data"]["ltp"])
+        r = requests.get(f"{WEBSITE_URL}/premarket/api/{FIB_API_SECRET}", timeout=15)
+        r.raise_for_status()
+        data = r.json()
     except Exception as e:
-        print(f"[WARN] LTP failed for {name}: {e}")
-    return None
+        print(f"[WARN] premarket input fetch failed: {e}")
+    idx_in = data.get("index", {})
+    return idx_in, assign_options(idx_in, data.get("options", []))
 
 
-def nearest_bias(price, lo, hi):
-    computed = sorted(
-        [(ratio, label, action, fib(ratio, lo, hi)) for ratio, label, action in BIAS_LEVELS],
-        key=lambda x: x[0],
-    )
-    best_idx = min(range(len(computed)), key=lambda i: abs(price - computed[i][3]))
-    ratio, label, action, lvl_price = computed[best_idx]
-    return {"ratio": ratio, "label": label, "action": action, "level_price": round(lvl_price, 2)}
+def inputs_complete(idx_in, opts_by_idx):
+    for i in INDEXES:
+        d = idx_in.get(i["name"], {})
+        if d.get("low") is None or d.get("price") is None:
+            return False
+        if len(opts_by_idx.get(i["name"], [])) < OPTIONS_PER_INDEX:
+            return False
+    return True
+
+
+def wait_for_inputs():
+    h, m = map(int, INPUT_DEADLINE_IST.split(":"))
+    deadline = datetime.now(IST).replace(hour=h, minute=m, second=0, microsecond=0)
+    while True:
+        idx_in, opts_by_idx = collect_inputs()
+        if inputs_complete(idx_in, opts_by_idx):
+            print("[INFO] Badho input aavi gayo.")
+            return idx_in, opts_by_idx
+        if datetime.now(IST) >= deadline:
+            print("[INFO] Deadline aavi gai, je input chhe te vapru chhu.")
+            return idx_in, opts_by_idx
+        time.sleep(10)
 
 
 # ============================================================
-# OPTION CHAIN — nearest weekly expiry, ATM + one ITM strike
+# ANGEL ONE: option chain + Greeks + LTP
 # ============================================================
 
 def load_master():
@@ -220,29 +189,17 @@ def get_expiry_options(master_df, name):
     ].copy()
     if opts.empty:
         return None, None
-
     opts["expiry_dt"] = pd.to_datetime(opts["expiry"], format="%d%b%Y", errors="coerce")
     opts = opts.dropna(subset=["expiry_dt"])
     today = pd.Timestamp.now().normalize()
     upcoming = opts[opts["expiry_dt"] >= today]
     if upcoming.empty:
         return None, None
-    nearest_expiry = upcoming["expiry_dt"].min()
-    opts = upcoming[upcoming["expiry_dt"] == nearest_expiry].copy()
+    nearest = upcoming["expiry_dt"].min()
+    opts = upcoming[upcoming["expiry_dt"] == nearest].copy()
     opts["strike_val"] = pd.to_numeric(opts["strike"], errors="coerce") / 100.0
     opts = opts.dropna(subset=["strike_val"])
-    return nearest_expiry, opts
-
-
-def pick_strikes(opts_df, spot):
-    strikes = sorted(opts_df["strike_val"].unique())
-    if not strikes:
-        return None, None, None
-    atm = min(strikes, key=lambda s: abs(s - spot))
-    idx = strikes.index(atm)
-    itm_ce = strikes[idx - 1] if idx > 0 else atm
-    itm_pe = strikes[idx + 1] if idx < len(strikes) - 1 else atm
-    return atm, itm_ce, itm_pe
+    return nearest, opts
 
 
 def find_row(opts_df, strike, opt_type):
@@ -250,24 +207,24 @@ def find_row(opts_df, strike, opt_type):
     if m.empty:
         return None
     r = m.iloc[0]
-    return {"token": str(r["token"]), "symbol": r["symbol"], "strike": strike}
+    return {"token": str(r["token"]), "symbol": r["symbol"]}
 
 
 def fetch_greeks(smart_api, opt_name, expiry_dt):
     try:
-        expiry_str = expiry_dt.strftime("%d%b%Y").upper()
         resp = safe_call(
             smart_api.optionGreek,
-            {"name": opt_name, "expirydate": expiry_str},
+            {"name": opt_name, "expirydate": expiry_dt.strftime("%d%b%Y").upper()},
             label=f"greeks({opt_name})",
         )
         rows = resp.get("data") or []
-        print(f"[DEBUG] greeks for {opt_name}: status={resp.get('status')} rows={len(rows)} sample={rows[:1]}")
+        print(f"[DEBUG] greeks {opt_name}: status={resp.get('status')} rows={len(rows)}")
         out = {}
         for r in rows:
             try:
-                k = (round(float(r.get("strikePrice")), 2), r.get("optionType"))
-                out[k] = {"delta": r.get("delta"), "theta": r.get("theta")}
+                out[(round(float(r.get("strikePrice")), 2), r.get("optionType"))] = {
+                    "delta": r.get("delta"), "theta": r.get("theta"),
+                }
             except Exception:
                 continue
         return out
@@ -277,8 +234,7 @@ def fetch_greeks(smart_api, opt_name, expiry_dt):
 
 
 def get_greek(greeks_map, strike, opt_type):
-    key = (round(strike, 2), opt_type)
-    g = greeks_map.get(key)
+    g = greeks_map.get((round(strike, 2), opt_type))
     if g:
         return g
     for (s, t), v in greeks_map.items():
@@ -287,200 +243,163 @@ def get_greek(greeks_map, strike, opt_type):
     return {"delta": None, "theta": None}
 
 
+def get_quote(smart_api, exchange, symbol, token):
+    """(ltp, last_close). Pre-market ma ltp na male to close vapray."""
+    try:
+        resp = safe_call(smart_api.ltpData, exchange, symbol, token,
+                         retries=3, base_delay=3, label=f"ltp({symbol})")
+        d = resp.get("data") or {}
+        ltp = float(d["ltp"]) if d.get("ltp") not in (None, "") else None
+        close = float(d["close"]) if d.get("close") not in (None, "") else None
+        if ltp is not None and ltp <= 0:
+            ltp = None
+        return ltp, close
+    except Exception as e:
+        print(f"[WARN] LTP failed for {symbol}: {e}")
+        return None, None
+
+
 # ============================================================
-# OPTION'S OWN VOLUME PROFILE (recent history)
+# BIAS + BEST ENTRY / TARGET / SL
 # ============================================================
 
-def fetch_recent_data(smart_api, token, days=5, interval="FIFTEEN_MINUTE"):
-    end = datetime.now()
-    start = end - timedelta(days=days)
-    resp = safe_call(
-        smart_api.getCandleData,
-        {
-            "exchange": "NFO", "symboltoken": token, "interval": interval,
-            "fromdate": start.strftime("%Y-%m-%d 09:15"),
-            "todate": end.strftime("%Y-%m-%d 15:30"),
-        },
-        label=f"recent_data({token})",
-    )
-    rows = resp.get("data") or []
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
-    df = df.drop_duplicates(subset="timestamp").sort_values("timestamp").reset_index(drop=True)
-    return df
+def index_bias(price, lo, hi):
+    levels = [(fib(r, lo, hi), a) for r, a in BIAS_LEVELS]
+    return min(levels, key=lambda x: abs(price - x[0]))[1]
 
 
-def calculate_volume_profile(df, num_bins=24, value_area_pct=0.70):
-    if df.empty:
-        return None
-    price_min, price_max = df["low"].min(), df["high"].max()
-    if price_max <= price_min:
-        return None
-
-    tick = 0.05
-    total_ticks = max(1, round((price_max - price_min) / tick))
-    ticks_per_row = max(1, round(total_ticks / num_bins))
-    bin_edges = [price_min]
-    remaining, px = total_ticks, price_min
-    while remaining > 0:
-        tt = min(ticks_per_row, remaining)
-        px += tt * tick
-        bin_edges.append(px)
-        remaining -= tt
-    bin_edges = np.array(bin_edges)
-    actual_bins = len(bin_edges) - 1
-    bin_volumes = np.zeros(actual_bins)
-
-    for _, row in df.iterrows():
-        low, high, vol = row["low"], row["high"], row["volume"]
-        if vol <= 0 or high <= low:
-            continue
-        start_bin = max(0, min(np.searchsorted(bin_edges, low, side="right") - 1, actual_bins - 1))
-        end_bin = max(0, min(np.searchsorted(bin_edges, high, side="right") - 1, actual_bins - 1))
-        span = end_bin - start_bin + 1
-        bin_volumes[start_bin:end_bin + 1] += vol / span
-
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    total_volume = bin_volumes.sum()
-    if total_volume == 0:
-        return None
-
-    poc_idx = int(np.argmax(bin_volumes))
-    target_volume = total_volume * value_area_pct
-    cum_volume = bin_volumes[poc_idx]
-    low_i, high_i = poc_idx, poc_idx
-
-    while cum_volume < target_volume and (low_i > 0 or high_i < actual_bins - 1):
-        vol_below = bin_volumes[low_i - 1] if low_i > 0 else -1
-        vol_above = bin_volumes[high_i + 1] if high_i < actual_bins - 1 else -1
-        if vol_above >= vol_below:
-            high_i += 1
-            cum_volume += bin_volumes[high_i]
-        else:
-            low_i -= 1
-            cum_volume += bin_volumes[low_i]
-
+def index_scenarios(price, lo, hi):
+    rng = hi - lo
     return {
-        "poc": round(float(bin_centers[poc_idx]), 2),
-        "vah": round(float(bin_centers[high_i]), 2),
-        "val": round(float(bin_centers[low_i]), 2),
-        "ltp": round(float(df["close"].iloc[-1]), 2),
+        "CALL": {"target": round(hi + TARGET_EXT * rng, 2), "sl": round(price - SL_RANGE_PCT * rng, 2)},
+        "PUT":  {"target": round(lo - TARGET_EXT * rng, 2), "sl": round(price + SL_RANGE_PCT * rng, 2)},
     }
 
 
-def option_nearest_zone(levels):
-    if levels is None:
-        return None
-    ltp, val, vah = levels["ltp"], levels["val"], levels["vah"]
-    rng = vah - val
-    if rng <= 0:
-        return None
-    ladder = sorted(
-        [(round(val + rng * r, 2), nm) for r, nm in FIB_RATIOS_NAMED if val + rng * r > 0],
-        key=lambda x: x[0],
-    )
-    if not ladder:
-        return None
-    nearest = min(ladder, key=lambda x: abs(x[0] - ltp))
-    return {"near_name": nearest[1], "near_price": nearest[0]}
+def option_plan(lo, hi, ltp, delta, theta, spot, scen, opt_type, bias):
+    plan = {"best_entry": max(round(fib(ENTRY_RATIO, lo, hi), 2), 0.05)}
+    if ltp is None:
+        plan["status"] = "LTP na malyo"
+        return plan
+    try:
+        d = float(delta)
+        decay = abs(float(theta)) * HOLD_DAY_FRACTION
+    except (TypeError, ValueError):
+        plan["status"] = "Greeks na malya"
+        return plan
+
+    target = ltp + d * (scen["target"] - spot) - decay
+    sl = max(ltp + d * (scen["sl"] - spot) - decay, 0.05)
+    plan["target"] = round(target, 2)
+    plan["sl"] = round(sl, 2)
+
+    risk, reward = ltp - sl, target - ltp
+    rr = round(reward / risk, 2) if risk > 0 and reward > 0 else None
+    plan["rr"] = rr
+
+    want = "CALL" if opt_type == "CE" else "PUT"
+    if bias == "WATCH" or bias is None:
+        plan["status"] = "WAIT (confirmation ni raah)"
+    elif bias != want:
+        plan["status"] = f"SKIP (index bias {bias})"
+    elif rr is None or rr < MIN_RR:
+        plan["status"] = f"SKIP (RR {rr if rr is not None else '-'} < {MIN_RR})"
+    else:
+        plan["status"] = f"TRADE (RR 1:{rr})"
+    return plan
 
 
-def build_option(smart_api, opts_df, strike, opt_type, moneyness, greeks_map):
-    row = find_row(opts_df, strike, opt_type)
-    if not row:
-        return {"type": opt_type, "moneyness": moneyness, "strike": strike, "error": "strike na malyo"}
-
-    time.sleep(2)
-    odf = fetch_recent_data(smart_api, row["token"])
-    levels = calculate_volume_profile(odf)
-    nz = option_nearest_zone(levels)
-    greek = get_greek(greeks_map, strike, opt_type)
-
-    # Live LTP try karo, na male to last candle close par fallback
-    # (pre-market run vakhte options market khulyu nathi hotu, etle
-    #  live LTP na male e normal chhe — tyare last close j sachu che)
-    time.sleep(1)
-    live_ltp = get_ltp(smart_api, row["token"], row["symbol"], exchange="NFO")
-    candle_ltp = levels["ltp"] if levels else None
-    ltp = live_ltp if live_ltp is not None else candle_ltp
-    ltp_source = "live" if live_ltp is not None else "last_candle_close"
-
-    zone = zone_analysis(ltp, levels["val"], levels["vah"]) if (levels and ltp) else {"notes": [], "predictions": []}
-
-    return {
-        "type": opt_type, "moneyness": moneyness, "symbol": row["symbol"], "strike": strike,
-        "ltp": ltp,
-        "ltp_source": ltp_source,
-        "delta": greek.get("delta"), "theta": greek.get("theta"),
-        "near_name": nz["near_name"] if nz else None,
-        "near_price": nz["near_price"] if nz else None,
-        "zone_notes": zone["notes"],
-        "zone_prediction": zone["predictions"],
-    }
-
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
     smart_api = login()
-    time.sleep(3)  # login pachi tarat j call karvathi rate-limit vadhu lage chhe, thodu settle thava do
+    time.sleep(3)
     master_df = load_master()
-    today_ist = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    today_ist = datetime.now(IST).date()
 
-    result = {"generated_at": datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(), "indexes": []}
-
+    # --- Telegram input ni raah jota jota Greeks fetch kari lo ---
+    prefetch = {}
     for idx in INDEXES:
-        entry = {"name": idx["name"]}
-        rng = prev_day_range(smart_api, idx["token"])
-        if not rng:
-            entry["error"] = "gai kali no data na malyo"
-            result["indexes"].append(entry)
-            continue
-
-        lo, hi = rng["low"], rng["high"]
-        entry["prev_day"] = rng
-        entry["levels"] = full_ladder(lo, hi)
-        entry["close_signal"] = nearest_bias(rng["close"], lo, hi)
-
-        time.sleep(2)
-        ltp = get_ltp(smart_api, idx["token"], idx["name"])
-        entry["ltp"] = ltp
-        entry["today_signal"] = nearest_bias(ltp, lo, hi) if ltp else None
-
-        # Index level zone analysis (live LTP che, etle direct vapri sakay)
-        entry["today_zone"] = zone_analysis(ltp, lo, hi) if ltp else {"notes": [], "predictions": []}
-
-        spot = ltp or rng["close"]
-
         try:
             expiry_dt, opts_df = get_expiry_options(master_df, idx["opt_name"])
         except Exception as e:
+            print(f"[WARN] expiry error {idx['name']}: {e}")
             expiry_dt, opts_df = None, None
-            entry["option_error"] = f"expiry shodhta error: {e}"
+        greeks = fetch_greeks(smart_api, idx["opt_name"], expiry_dt) if expiry_dt is not None else {}
+        prefetch[idx["name"]] = (expiry_dt, opts_df, greeks)
+        time.sleep(2)
 
-        entry["options"] = []
-        if expiry_dt is not None and opts_df is not None and not opts_df.empty:
+    idx_in, opts_by_idx = wait_for_inputs()
+
+    result = {"generated_at": datetime.now(IST).isoformat(), "indexes": []}
+
+    for idx in INDEXES:
+        name = idx["name"]
+        entry = {"name": name}
+        d = idx_in.get(name, {})
+        lo, hi = d.get("low"), d.get("high")
+        if lo is None or hi is None or hi <= lo:
+            entry["error"] = "VAL/VAH na malya (format: NIFTY VAL 22522 VAH 22590)"
+            result["indexes"].append(entry)
+            continue
+
+        price, price_src = d.get("price"), "telegram"
+        if price is None:
+            time.sleep(1)
+            ltp, close = get_quote(smart_api, "NSE", name, idx["token"])
+            price = ltp if ltp is not None else close
+            price_src = "angel_ltp" if price is not None else None
+        if price is None:
+            entry["error"] = "Pre-open price na malyo (format: NIFTY 22525.65)"
+            result["indexes"].append(entry)
+            continue
+
+        bias = index_bias(price, lo, hi)
+        scen = index_scenarios(price, lo, hi)
+        entry.update({
+            "low": lo, "high": hi, "price": price, "price_source": price_src,
+            "bias": bias,
+            "best_entry": round(fib(ENTRY_RATIO, lo, hi), 2),
+            "scenarios": scen,
+        })
+        if bias in scen:
+            entry["target"], entry["sl"] = scen[bias]["target"], scen[bias]["sl"]
+
+        expiry_dt, opts_df, greeks_map = prefetch[name]
+        if expiry_dt is not None:
             entry["expiry"] = expiry_dt.strftime("%d-%b-%Y")
             entry["is_expiry_day"] = (expiry_dt.date() == today_ist)
 
-            atm, itm_ce, itm_pe = pick_strikes(opts_df, spot)
-
-            time.sleep(2)
-            greeks_map = fetch_greeks(smart_api, idx["opt_name"], expiry_dt)
-
-            for strike, opt_type, money in [
-                (atm, "CE", "ATM"), (itm_ce, "CE", "ITM"),
-                (atm, "PE", "ATM"), (itm_pe, "PE", "ITM"),
-            ]:
-                try:
-                    entry["options"].append(build_option(smart_api, opts_df, strike, opt_type, money, greeks_map))
-                except Exception as e:
-                    entry["options"].append({"type": opt_type, "moneyness": money, "strike": strike, "error": str(e)})
+        entry["options"] = []
+        user_opts = opts_by_idx.get(name, [])
+        if not user_opts:
+            entry["option_error"] = "Telegram thi options na malya (format: 22550CE VAL 120 VAH 160)"
+        elif opts_df is None:
+            entry["option_error"] = "Angel master ma options na malya"
         else:
-            entry["option_error"] = entry.get("option_error", "options na malya")
+            for o in user_opts:
+                base = {"type": o["type"], "strike": o["strike"], "low": o["low"], "high": o["high"]}
+                row = find_row(opts_df, o["strike"], o["type"])
+                if not row:
+                    base["error"] = "strike Angel ma na malyo"
+                    entry["options"].append(base)
+                    continue
+                time.sleep(1)
+                ltp, close = get_quote(smart_api, "NFO", row["symbol"], row["token"])
+                if o["ltp_override"] is not None:
+                    ltp = o["ltp_override"]
+                elif ltp is None:
+                    ltp = close
+                g = get_greek(greeks_map, o["strike"], o["type"])
+                plan = option_plan(o["low"], o["high"], ltp, g["delta"], g["theta"],
+                                   price, scen["CALL" if o["type"] == "CE" else "PUT"], o["type"], bias)
+                base.update({"symbol": row["symbol"], "ltp": ltp,
+                             "delta": g["delta"], "theta": g["theta"], **plan})
+                entry["options"].append(base)
 
         result["indexes"].append(entry)
-        time.sleep(2)
 
     with open(OUT_FILE, "w") as f:
         json.dump(result, f, indent=2)
