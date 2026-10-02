@@ -17,22 +17,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install requirements
         run: pip install smartapi-python pyotp logzero websocket-client requests reportlab pandas numpy
 
-      - name: Wait for Telegram input (till 9:10) and run alert
+      - name: Wait for input (till 9:10 IST) and run alert
         env:
           ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
           ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
           ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
           ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WEBSITE_URL: ${{ secrets.WEBSITE_URL }}
+          FIB_API_SECRET: ${{ secrets.FIB_API_SECRET }}
           INPUT_DEADLINE_IST: "09:10"
         run: python nifty_banknifty_alert.py
 
