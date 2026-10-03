@@ -1,29 +1,23 @@
 """
-Pre-market Nifty & BankNifty options alert (Telegram input version).
+Pre-market Nifty & BankNifty options alert.
 
 Flow:
-  1. Login + Greeks (delta/theta) Angel One thi pehla thi j fetch kari lo (wait ni darmiyan).
-  2. Website API thi aajno Telegram input vancho (INPUT_DEADLINE_IST = 09:10 sudhi raah jovo,
-     badhu input aavi jay to vahelu aagal vadho).
-  3. Index + 4 options (CE ATM/ITM, PE ATM/ITM) mate Best Entry, Target, SL kadho.
-  4. index_alert.json lakho -> make_index_alert_pdf.py PDF banave.
+  1. Login + Greeks (delta/theta) Angel One thi pehla thi fetch.
+  2. Website API thi aajno Telegram input vancho (9:10 sudhi raah, badho aavi jay to vahelu).
+  3. Index na VAL/VAH par fib ladder: Entry level, Target 1-2-3 (next levels), SL (opposite next level).
+     - Candle level ne upar thi niche aavi ne pachhu upar close thay  -> CALL
+     - Candle level ne niche thi upar jai ne pachhu niche close thay  -> PUT
+     - Price level ni nazdik hoy to banne chance, nahi to niche no support (CALL) ane upar no resistance (PUT).
+  4. Option na Entry/Target/SL = index levels ne Delta thi option price ma convert (theta decay ghatadi ne).
+  5. index_alert.json lakho -> make_index_alert_pdf.py PDF banave.
 
-Telegram message format (ek j message ma pan chale, alag alag pan chale):
-
-    NIFTY VAL 22522.15 VAH 22590.05   (athva 9:18 alert vala INTRADAY levels)
-    BANKNIFTY VAL 54555.1 VAH 54905.05
-    NIFTY PRICE 22525.65      <- pre-open price (9:10 sudhi ma)
-    BANKNIFTY PRICE 54690.95
-    22550CE VAL 120 VAH 160
-    22500CE VAL 140 VAH 180
-    22550PE VAL 110 VAH 150
-    22600PE VAL 150 VAH 190
-    54700CE VAL 980 VAH 1100     <- BANKNIFTY options pan em j
-    (optional: "NIFTY 22550CE LOW .. HIGH .." athva ant ma "LTP 131" lakhi shako)
+Telegram input (VAL VAH = pehlo nano, biju motu number):
+    NIFTY 22522 22590
+    NIFTY 22525.65            <- pre-open price
+    22550CE 120 160           <- option VAL VAH
 """
 
 import os
-import re
 import time
 import json
 import pandas as pd
@@ -52,23 +46,30 @@ INDEXES = [
 ]
 
 # ============================================================
-# CONFIG â€” Best Entry / Target / SL na badha points aa j jagya e badlo
+# CONFIG — badha points aa j jagya e badlo
 # ============================================================
-ENTRY_RATIO = -0.272        # Best Entry = VAL - 0.272 x Range (index ane option banne mate)
-TARGET_EXT = 0.272          # Index target = VAH + 0.272 x Range (CALL) / VAL - 0.272 x Range (PUT)
-SL_RANGE_PCT = 0.30         # Index SL = Price -/+ 30% of Range
-HOLD_DAY_FRACTION = 0.5     # Theta decay ketla divas no ganvo (~3 kalak = 0.5 divas)
-MIN_RR = 1.5                # Aa thi ochho Risk:Reward hoy to "SKIP"
-OPTIONS_PER_INDEX = 4       # CE ATM, CE ITM, PE ATM, PE ITM
-
-# Bias (index price kya level ni nazdik chhe) â€” alert ma faqat CALL/PUT/WATCH dekhase
-BIAS_LEVELS = [
-    (0.0,   "PUT"),
-    (0.25,  "CALL"),
-    (0.75,  "PUT"),
-    (1.0,   "CALL"),
-    (1.272, "WATCH"),
+# Fib ladder (ratio alert ma dekhatu nathi, faqat naam + price)
+LEVELS = [
+    (1.618,  "Golden Reversal T1"),
+    (1.272,  "Potential Target 1"),
+    (1.0,    "Break up"),
+    (0.75,   "Potential Sell Reversal"),
+    (0.618,  "Golden Reversal"),
+    (0.5,    "Mid Zone"),
+    (0.382,  "Reaction Zone"),
+    (0.25,   "Potential Buy Reversal"),
+    (0.0,    "Breakdown"),
+    (-0.272, "Day Low"),
+    (-0.618, "Bounce Back"),
+    (-1.618, "Potential Target 2"),
 ]
+BEST_ENTRY_RATIO = -0.272        # "Best Entry" line (Day Low)
+NEAR_PCT_OF_RANGE = 0.10         # price level thi range na 10% ni andar hoy to "nazdik"
+NEAR_MIN_PCT_OF_PRICE = 0.0001
+TARGET_COUNT = 3
+HOLD_DAY_FRACTION = 0.2          # Theta decay ketla divas no ganvo (~1 kalak = 0.2 divas) - tamari holding pramane badlo
+OPTIONS_PER_INDEX = 4            # CE ATM, CE ITM, PE ATM, PE ITM
+MID_RATIO = 0.5
 
 OUT_FILE = "index_alert.json"
 
@@ -135,7 +136,6 @@ def assign_options(idx_in, opts):
 
 
 def collect_inputs():
-    """Tamari website (PythonAnywhere) par webhook thi save thayelo aajno input."""
     data = {}
     try:
         r = requests.get(f"{WEBSITE_URL}/premarket/api/{FIB_API_SECRET}", timeout=15)
@@ -260,53 +260,111 @@ def get_quote(smart_api, exchange, symbol, token):
 
 
 # ============================================================
-# BIAS + BEST ENTRY / TARGET / SL
+# FIB LADDER -> ENTRY / TARGET 1-2-3 / SL
 # ============================================================
 
-def index_bias(price, lo, hi):
-    levels = [(fib(r, lo, hi), a) for r, a in BIAS_LEVELS]
-    return min(levels, key=lambda x: abs(price - x[0]))[1]
-
-
-def index_scenarios(price, lo, hi):
+def build_ladder(lo, hi):
     rng = hi - lo
+    ladder = [{"ratio": r, "name": n, "price": round(lo + r * rng, 2)} for r, n in LEVELS]
+    ladder.sort(key=lambda x: x["price"])
+    return ladder
+
+
+def _lv(l):
+    return {"name": l["name"], "price": l["price"]}
+
+
+def call_plan_at(ladder, i):
+    """Candle level ne upar thi niche aavi ne pachhu upar close thay -> CALL."""
+    lv = ladder[i]
     return {
-        "CALL": {"target": round(hi + TARGET_EXT * rng, 2), "sl": round(price - SL_RANGE_PCT * rng, 2)},
-        "PUT":  {"target": round(lo - TARGET_EXT * rng, 2), "sl": round(price + SL_RANGE_PCT * rng, 2)},
+        "side": "CALL",
+        "level_name": lv["name"],
+        "entry": lv["price"],
+        "trigger": f"{lv['name']} ({lv['price']}) ni upar thi niche aavi ne candle pachhu upar close thay to CALL",
+        "targets": [_lv(l) for l in ladder[i + 1:i + 1 + TARGET_COUNT]],
+        "sl": _lv(ladder[i - 1]) if i > 0 else None,
     }
 
 
-def option_plan(lo, hi, ltp, delta, theta, spot, scen, opt_type, bias):
-    plan = {"best_entry": max(round(fib(ENTRY_RATIO, lo, hi), 2), 0.05)}
+def put_plan_at(ladder, i):
+    """Candle level ne niche thi upar jai ne pachhu niche close thay -> PUT."""
+    lv = ladder[i]
+    lower = ladder[max(0, i - TARGET_COUNT):i]
+    return {
+        "side": "PUT",
+        "level_name": lv["name"],
+        "entry": lv["price"],
+        "trigger": f"{lv['name']} ({lv['price']}) ni niche thi upar jai ne candle pachhu niche close thay to PUT",
+        "targets": [_lv(l) for l in reversed(lower)],
+        "sl": _lv(ladder[i + 1]) if i + 1 < len(ladder) else None,
+    }
+
+
+def build_plans(price, lo, hi):
+    ladder = build_ladder(lo, hi)
+    rng = hi - lo
+    tol = max(NEAR_PCT_OF_RANGE * rng, price * NEAR_MIN_PCT_OF_PRICE)
+
+    dists = [abs(price - l["price"]) for l in ladder]
+    ni = min(range(len(ladder)), key=lambda k: dists[k])
+    near = _lv(ladder[ni]) if dists[ni] <= tol else None
+
+    if near:
+        call_i = put_i = ni
+    else:
+        below = [k for k, l in enumerate(ladder) if l["price"] < price]
+        above = [k for k, l in enumerate(ladder) if l["price"] > price]
+        call_i = max(below) if below else None
+        put_i = min(above) if above else None
+
+    plans = {
+        "CALL": call_plan_at(ladder, call_i) if call_i is not None else None,
+        "PUT": put_plan_at(ladder, put_i) if put_i is not None else None,
+    }
+
+    mid = next(l["price"] for l in ladder if abs(l["ratio"] - MID_RATIO) < 1e-9)
+    if near:
+        suggestion = (f"Price {near['name']} ({near['price']}) ni nazdik chhe: banne chance. "
+                      f"Candle close thi decide karo.")
+    elif price > mid:
+        suggestion = "Price Mid Zone ni upar chhe: CALL side vadhu preferred (support par rejection). PUT fakt resistance rejection par."
+    else:
+        suggestion = "Price Mid Zone ni niche chhe: PUT side vadhu preferred (resistance par rejection). CALL fakt support rejection par."
+
+    best_entry = next(l["price"] for l in ladder if abs(l["ratio"] - BEST_ENTRY_RATIO) < 1e-9)
+    return {"ladder": ladder, "near": near, "plans": plans, "suggestion": suggestion, "best_entry": best_entry}
+
+
+def option_plan(o, ltp, delta, theta, spot, idx_plan):
+    """Index plan na levels ne Delta thi option price ma convert."""
+    out = {"best_entry": max(round(fib(BEST_ENTRY_RATIO, o["low"], o["high"]), 2), 0.05)}
     if ltp is None:
-        plan["status"] = "LTP na malyo"
-        return plan
+        out["status"] = "LTP na malyo"
+        return out
+    if not idx_plan:
+        out["status"] = "Index level na malyo"
+        return out
     try:
         d = float(delta)
         decay = abs(float(theta)) * HOLD_DAY_FRACTION
     except (TypeError, ValueError):
-        plan["status"] = "Greeks na malya"
-        return plan
+        out["status"] = "Greeks na malya"
+        return out
 
-    target = ltp + d * (scen["target"] - spot) - decay
-    sl = max(ltp + d * (scen["sl"] - spot) - decay, 0.05)
-    plan["target"] = round(target, 2)
-    plan["sl"] = round(sl, 2)
+    def at(level):
+        return ltp + d * (level - spot)
 
-    risk, reward = ltp - sl, target - ltp
-    rr = round(reward / risk, 2) if risk > 0 and reward > 0 else None
-    plan["rr"] = rr
+    entry = max(round(at(idx_plan["entry"]), 2), 0.05)
+    targets = [max(round(at(t["price"]) - decay, 2), 0.05) for t in idx_plan["targets"]]
+    sl = max(round(at(idx_plan["sl"]["price"]) - decay, 2), 0.05) if idx_plan["sl"] else None
 
-    want = "CALL" if opt_type == "CE" else "PUT"
-    if bias == "WATCH" or bias is None:
-        plan["status"] = "WAIT (confirmation ni raah)"
-    elif bias != want:
-        plan["status"] = f"SKIP (index bias {bias})"
-    elif rr is None or rr < MIN_RR:
-        plan["status"] = f"SKIP (RR {rr if rr is not None else '-'} < {MIN_RR})"
-    else:
-        plan["status"] = f"TRADE (RR 1:{rr})"
-    return plan
+    out.update({"entry": entry, "targets": targets, "sl": sl})
+    status = "Candle close ni raah"
+    if sl is not None and len(targets) >= 2 and entry > sl and targets[1] > entry:
+        status += f" | RR(T2) 1:{round((targets[1] - entry) / (entry - sl), 1)}"
+    out["status"] = status
+    return out
 
 
 # ============================================================
@@ -319,7 +377,7 @@ def main():
     master_df = load_master()
     today_ist = datetime.now(IST).date()
 
-    # --- Telegram input ni raah jota jota Greeks fetch kari lo ---
+    # Input ni raah jota jota Greeks fetch kari lo
     prefetch = {}
     for idx in INDEXES:
         try:
@@ -341,7 +399,7 @@ def main():
         d = idx_in.get(name, {})
         lo, hi = d.get("low"), d.get("high")
         if lo is None or hi is None or hi <= lo:
-            entry["error"] = "VAL/VAH na malya (format: NIFTY VAL 22522 VAH 22590)"
+            entry["error"] = "VAL/VAH na malya (format: NIFTY 22522 22590)"
             result["indexes"].append(entry)
             continue
 
@@ -356,16 +414,13 @@ def main():
             result["indexes"].append(entry)
             continue
 
-        bias = index_bias(price, lo, hi)
-        scen = index_scenarios(price, lo, hi)
+        built = build_plans(price, lo, hi)
+        plans = built["plans"]
         entry.update({
             "low": lo, "high": hi, "price": price, "price_source": price_src,
-            "bias": bias,
-            "best_entry": round(fib(ENTRY_RATIO, lo, hi), 2),
-            "scenarios": scen,
+            "best_entry": built["best_entry"], "near": built["near"],
+            "plans": plans, "suggestion": built["suggestion"],
         })
-        if bias in scen:
-            entry["target"], entry["sl"] = scen[bias]["target"], scen[bias]["sl"]
 
         expiry_dt, opts_df, greeks_map = prefetch[name]
         if expiry_dt is not None:
@@ -375,7 +430,7 @@ def main():
         entry["options"] = []
         user_opts = opts_by_idx.get(name, [])
         if not user_opts:
-            entry["option_error"] = "Telegram thi options na malya (format: 22550CE VAL 120 VAH 160)"
+            entry["option_error"] = "Telegram thi options na malya (format: 22550CE 120 160)"
         elif opts_df is None:
             entry["option_error"] = "Angel master ma options na malya"
         else:
@@ -393,8 +448,8 @@ def main():
                 elif ltp is None:
                     ltp = close
                 g = get_greek(greeks_map, o["strike"], o["type"])
-                plan = option_plan(o["low"], o["high"], ltp, g["delta"], g["theta"],
-                                   price, scen["CALL" if o["type"] == "CE" else "PUT"], o["type"], bias)
+                plan = option_plan(o, ltp, g["delta"], g["theta"], price,
+                                   plans["CALL" if o["type"] == "CE" else "PUT"])
                 base.update({"symbol": row["symbol"], "ltp": ltp,
                              "delta": g["delta"], "theta": g["theta"], **plan})
                 entry["options"].append(base)
