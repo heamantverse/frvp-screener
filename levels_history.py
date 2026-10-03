@@ -1,17 +1,20 @@
 """
-levels_history.py  -  FRVP levels for ONE date (default 2026-10-01)
+levels_history.py  -  DAILY FRVP levels for index futures (NIFTY / BANKNIFTY / SENSEX)
 
-For the target date D it uses ONLY candles BEFORE D (4-month lookback of
-30-min candles) to calculate Point (POC), VHIGH (VAH), VLOW (VAL) exactly the
-way the SCOPE Pine Script does, then adds fib levels on VLOW..VHIGH and the
-Day High / Day Low of D.  Output: Excel (+ sent to Telegram).
+For every date D it builds the FRVP of that day's own session (09:15-15:30,
+1-minute candles of the nearest-expiry index future = what TradingView shows on
+NIFTY1! at 1m) and writes: Day High / Low / Close, Point (PICK MOVE = POC),
+VHIGH (1B = VAH), VLOW (ZB = VAL) and the fib levels built on ZB..1B.
 
-Env vars (use the SAME secret names as your screener_job.py workflow):
-  ANGEL_API_KEY, ANGEL_CLIENT_ID, ANGEL_PIN, ANGEL_TOTP_SECRET
+TARGET_DATE examples:  2026-10-01
+                       2026-09-30,2026-10-01
+                       2026-09-01:2026-10-01      (every weekday in the range)
+
+Secrets/env (same names as your other workflows):
+  ANGEL_API_KEY, ANGEL_CLIENT_ID, ANGEL_PIN (= ANGEL_PASSWORD secret), ANGEL_TOTP_SECRET
   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-  TARGET_DATE (optional, YYYY-MM-DD)
 """
-import os, math, time, json
+import os, math, time
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -21,26 +24,24 @@ import requests
 from SmartApi import SmartConnect
 
 TARGET_DATE = os.getenv("TARGET_DATE", "2026-10-01")
-LOOKBACK_DAYS = 122          # ~4 months
 ROWS = 24                    # same as Pine "Rows"
 VA_PCT = 0.70                # same as Pine "Value Area %"
-TICK = 0.05                  # NSE equity tick
-FIBS = [("Fib 0 (Break down)", 0.0), ("Fib 0.25 (Buy Reversal)", 0.25),
-        ("Fib 0.75 (Sell Reversal)", 0.75), ("Fib 1 (Breakout)", 1.0),
-        ("Fib 1.272 (Target 1)", 1.272)]
+TICK = 0.1                   # index future tick as shown on TradingView (1 decimal)
 
 SCRIP_MASTER = "https://margincalculator.angelbroking.com/OpenAPI_Files/OpenAPIScripMaster.json"
+INDICES = ["NIFTY", "BANKNIFTY", "SENSEX"]
 FUT_EXCH = {"NIFTY": "NFO", "BANKNIFTY": "NFO", "SENSEX": "BFO"}
 
-# Indices only: name -> (exchange, Angel index token)
-INDICES = {"NIFTY": ("NSE", "99926000"),
-           "BANKNIFTY": ("NSE", "99926009"),
-           "SENSEX": ("BSE", "99919000")}
+FIB_RATIOS = [-1.618, -0.768, -0.618, -0.272, 0, 0.236, 0.618, 1, 1.236,
+              1.618, 2, 2.414, 2.618, 3, 3.236]
+FIB_NAMES = {0: "ZB", 1: "1B", 0.236: "REVERSAL", 0.618: "GOLDEN REVERSAL",
+             1.236: "STALL", 1.618: "GR1", 2: "DD", -0.272: "DAYS LOW/HIGH",
+             -0.618: "BOUNCER", -1.618: "IMPULSIVE BOUNCER"}
 
 
 # ---------------------------------------------------------------- FRVP ----
 def frvp(h, l, v, tick=TICK, rows=ROWS, va_pct=VA_PCT):
-    h, l, v = map(np.asarray, (h, l, v))
+    h, l, v = map(lambda a: np.asarray(a, dtype=float), (h, l, v))
     r_high, r_low = h.max(), l.min()
     if r_high <= r_low:
         return None
@@ -60,15 +61,11 @@ def frvp(h, l, v, tick=TICK, rows=ROWS, va_pct=VA_PCT):
     lo, hi = np.array(lo), np.array(hi)
     n_rows = len(lo)
 
-    ov = np.minimum(h[:, None], hi[None, :]) - np.maximum(l[:, None], lo[None, :])
-    ov = np.clip(ov, 0, None)
+    ov = np.clip(np.minimum(h[:, None], hi[None, :]) - np.maximum(l[:, None], lo[None, :]), 0, None)
     br = (h - l)[:, None]
     frac = np.where(br > 0, ov / np.where(br > 0, br, 1), 0.0)
-    flat = (h - l) == 0                       # zero-range candles -> row holding the price
-    if flat.any():
-        for i in np.where(flat)[0]:
-            idx = np.searchsorted(hi, h[i], side="left")
-            frac[i, min(idx, n_rows - 1)] = 1.0
+    for i in np.where((h - l) == 0)[0]:                  # zero-range candle -> row holding price
+        frac[i, min(np.searchsorted(hi, h[i], side="left"), n_rows - 1)] = 1.0
     vol = (frac * v[:, None]).sum(axis=0)
 
     max_vol = vol.max()
@@ -99,7 +96,7 @@ def frvp(h, l, v, tick=TICK, rows=ROWS, va_pct=VA_PCT):
         else:
             lo_i -= 1
         accu += nxt
-    return point, hi[hi_i], lo[lo_i]          # Point, VHIGH, VLOW
+    return point, hi[hi_i], lo[lo_i]          # Point (POC), VHIGH (1B), VLOW (ZB)
 
 
 # ----------------------------------------------------------- Angel One ----
@@ -120,122 +117,111 @@ def candles(api, exch, token, interval, start, end, tries=3):
         try:
             res = api.getCandleData(params)
             if res and res.get("status") and res.get("data"):
-                df = pd.DataFrame(res["data"], columns=["t", "o", "h", "l", "c", "v"])
-                return df
+                return pd.DataFrame(res["data"], columns=["t", "o", "h", "l", "c", "v"])
+            print("   no data:", res.get("message") if isinstance(res, dict) else res)
         except Exception as e:
             print("   retry", t + 1, e)
         time.sleep(1.5 * (t + 1))
     return None
 
 
-# ------------------------------------------------------------ futures ----
 def load_master():
     r = requests.get(SCRIP_MASTER, timeout=120)
     r.raise_for_status()
     return pd.DataFrame(r.json())
 
 
-def fut_contract(master, name, target):
-    """Nearest-expiry index future whose expiry is on/after the target date."""
+def fut_contract(master, name, d):
+    """Nearest-expiry index future with expiry on/after date d (what NIFTY1! shows)."""
     exch = FUT_EXCH[name]
     m = master[(master["instrumenttype"] == "FUTIDX") & (master["name"] == name)
                & (master["exch_seg"] == exch)].copy()
     if m.empty:
         return None
     m["exp"] = pd.to_datetime(m["expiry"], format="%d%b%Y", errors="coerce")
-    m = m[m["exp"] >= pd.Timestamp(target.date())].sort_values("exp")
+    m = m[m["exp"] >= pd.Timestamp(d.date())].sort_values("exp")
     if m.empty:
         return None
     row = m.iloc[0]
     return exch, str(row["token"]), str(row["symbol"])
 
 
-def make_row(sym, source, day, r):
+# ---------------------------------------------------------------- misc ----
+def parse_dates(spec):
+    out = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            a, b = [datetime.strptime(x.strip(), "%Y-%m-%d") for x in part.split(":")]
+            while a <= b:
+                if a.weekday() < 5:
+                    out.append(a)
+                a += timedelta(days=1)
+        else:
+            out.append(datetime.strptime(part, "%Y-%m-%d"))
+    return out
+
+
+def fib_label(r):
+    nm = FIB_NAMES.get(r, "")
+    return f"{r:g} {nm}".strip()
+
+
+def make_row(d, sym, contract, bars, df, r):
     point, vhigh, vlow = r
     rng = vhigh - vlow
-    row = {"Date": TARGET_DATE, "Symbol": sym, "Source": source,
-           "Day High": day["h"].iloc[0], "Day Low": day["l"].iloc[0],
-           "Day Close": day["c"].iloc[0],
-           "Point": point, "VHIGH": vhigh, "VLOW": vlow}
-    for name, ratio in FIBS:
-        row[name] = vlow + rng * ratio
+    row = {"Date": d.strftime("%Y-%m-%d"), "Symbol": sym, "Contract": contract, "Bars": bars,
+           "Day High": df["h"].max(), "Day Low": df["l"].min(), "Day Close": df["c"].iloc[-1],
+           "Point (PICK MOVE)": point, "VHIGH (1B)": vhigh, "VLOW (ZB)": vlow}
+    for ratio in FIB_RATIOS:
+        row[fib_label(ratio)] = vlow + rng * ratio
     return row
 
 
 # ---------------------------------------------------------------- main ----
 def main():
-    d = datetime.strptime(TARGET_DATE, "%Y-%m-%d")
-    lb_start = (d - timedelta(days=LOOKBACK_DAYS)).replace(hour=9, minute=15)
-    lb_end = (d - timedelta(days=1)).replace(hour=15, minute=30)   # nothing from target day
-    day_start, day_end = d.replace(hour=9, minute=15), d.replace(hour=15, minute=30)
-
+    dates = parse_dates(TARGET_DATE)
     api = login()
-    try:
-        master = load_master()
-    except Exception as e:
-        print("scrip master failed:", e)
-        master = None
-
+    master = load_master()
     out = []
-    for sym, (exch, tok) in INDICES.items():
-        # ---------- A) SPOT index (volume if present, else equal weight)
-        print("->", sym, "SPOT")
-        intr = candles(api, exch, tok, "THIRTY_MINUTE", lb_start, lb_end)
-        time.sleep(0.4)
-        day = candles(api, exch, tok, "ONE_DAY", day_start, day_end)
-        time.sleep(0.4)
-        if intr is None or day is None or len(intr) < 20:
-            print("   spot skipped (no data)")
-        else:
-            vols = intr["v"].astype(float)
-            basis = "SPOT - index volume"
-            if vols.sum() <= 0:
-                vols = np.ones(len(intr))
-                basis = "SPOT - equal-weight (no volume)"
-            r = frvp(intr["h"], intr["l"], vols)
+    for d in dates:
+        s, e = d.replace(hour=9, minute=15), d.replace(hour=15, minute=30)
+        for sym in INDICES:
+            c = fut_contract(master, sym, d)
+            if c is None:
+                print(f"{d:%Y-%m-%d} {sym}: no active futures contract found")
+                continue
+            ex, tok, fs = c
+            print(f"-> {d:%Y-%m-%d} {sym} {fs}")
+            df = candles(api, ex, tok, "ONE_MINUTE", s, e)
+            time.sleep(0.5)
+            if df is None or len(df) < 50:
+                print("   skipped (no/low data)")
+                continue
+            r = frvp(df["h"], df["l"], df["v"])
             if r is not None:
-                out.append(make_row(sym, basis, day, r))
-
-        # ---------- B) FUTURES (price + volume of nearest-expiry contract)
-        if master is None:
-            continue
-        c = fut_contract(master, sym, d)
-        if c is None:
-            print("   no futures contract found for", sym)
-            continue
-        fx, ft, fs = c
-        print("->", sym, "FUT", fs, ft)
-        fi = candles(api, fx, ft, "THIRTY_MINUTE", lb_start, lb_end)
-        time.sleep(0.4)
-        fd = candles(api, fx, ft, "ONE_DAY", day_start, day_end)
-        time.sleep(0.4)
-        if fi is None or fd is None or len(fi) < 20:
-            print("   futures skipped (no data)")
-            continue
-        first = str(fi["t"].iloc[0])[:10]
-        days = fi["t"].astype(str).str[:10].nunique()
-        r = frvp(fi["h"], fi["l"], fi["v"].astype(float))
-        if r is not None:
-            out.append(make_row(sym, f"FUT {fs} (data from {first}, {days} days)", fd, r))
+                out.append(make_row(d, sym, fs, len(df), df, r))
 
     if not out:
         raise SystemExit("No data produced")
     df = pd.DataFrame(out).round(2)
-    fn = f"levels_{TARGET_DATE}.xlsx"
+    fn = f"levels_{dates[0]:%Y-%m-%d}_{dates[-1]:%Y-%m-%d}.xlsx" if len(dates) > 1 else f"levels_{dates[0]:%Y-%m-%d}.xlsx"
     with pd.ExcelWriter(fn, engine="openpyxl") as xw:
         df.to_excel(xw, index=False, sheet_name="Levels")
         ws = xw.sheets["Levels"]
         ws.freeze_panes = "D2"
         for col in ws.columns:
             w = max(len(str(c.value)) for c in col if c.value is not None)
-            ws.column_dimensions[col[0].column_letter].width = min(max(12, w + 2), 48)
-    print(df.to_string())
+            ws.column_dimensions[col[0].column_letter].width = min(max(11, w + 2), 40)
+    print(df.T.to_string())
 
     tok_, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
     if tok_ and chat:
         with open(fn, "rb") as f:
             requests.post(f"https://api.telegram.org/bot{tok_}/sendDocument",
-                          data={"chat_id": chat, "caption": f"Levels for {TARGET_DATE}"},
+                          data={"chat_id": chat, "caption": f"FRVP levels {TARGET_DATE}"},
                           files={"document": f}, timeout=60)
 
 
