@@ -29,16 +29,10 @@ FIBS = [("Fib 0 (Break down)", 0.0), ("Fib 0.25 (Buy Reversal)", 0.25),
         ("Fib 0.75 (Sell Reversal)", 0.75), ("Fib 1 (Breakout)", 1.0),
         ("Fib 1.272 (Target 1)", 1.272)]
 
-# Nifty 50 (edit if the index changed)
-SYMBOLS = ["ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK",
-           "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BEL", "BHARTIARTL",
-           "CIPLA", "COALINDIA", "DRREDDY", "EICHERMOT", "ETERNAL", "GRASIM",
-           "HCLTECH", "HDFCBANK", "HDFCLIFE", "HINDALCO", "HINDUNILVR",
-           "ICICIBANK", "INDUSINDBK", "INFY", "ITC", "JIOFIN", "JSWSTEEL",
-           "KOTAKBANK", "LT", "M&M", "MARUTI", "NESTLEIND", "NTPC", "ONGC",
-           "POWERGRID", "RELIANCE", "SBILIFE", "SBIN", "SHRIRAMFIN",
-           "SUNPHARMA", "TATACONSUM", "TATAMOTORS", "TATASTEEL", "TCS",
-           "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO", "BAJAJHFL"]
+# Indices only: name -> (exchange, Angel index token)
+INDICES = {"NIFTY": ("NSE", "99926000"),
+           "BANKNIFTY": ("NSE", "99926009"),
+           "SENSEX": ("BSE", "99919000")}
 
 
 # ---------------------------------------------------------------- FRVP ----
@@ -115,8 +109,8 @@ def login():
     return api
 
 
-def candles(api, token, interval, start, end, tries=3):
-    params = {"exchange": "NSE", "symboltoken": str(token), "interval": interval,
+def candles(api, exch, token, interval, start, end, tries=3):
+    params = {"exchange": exch, "symboltoken": str(token), "interval": interval,
               "fromdate": start.strftime("%Y-%m-%d %H:%M"),
               "todate": end.strftime("%Y-%m-%d %H:%M")}
     for t in range(tries):
@@ -131,31 +125,6 @@ def candles(api, token, interval, start, end, tries=3):
     return None
 
 
-def load_tokens(path="nse_equity_master.csv"):
-    m = pd.read_csv(path, dtype=str)
-    m.columns = [c.strip().lower() for c in m.columns]
-    print("CSV columns:", list(m.columns))
-    cols = list(m.columns)
-    tok_col = next((c for c in cols if "token" in c or c in ("security_id", "securityid", "scrip_id")), None)
-    sym_cols = [c for c in cols if c != tok_col and any(k in c for k in ("symbol", "name", "scrip", "ticker"))]
-    if tok_col is None or not sym_cols:
-        print(m.head())
-        raise SystemExit(f"Could not find token/symbol column. Columns: {cols}")
-    print("using token column:", tok_col, "| symbol columns:", sym_cols)
-    for c in sym_cols:
-        m[c] = m[c].astype(str).str.strip().str.upper()
-    out = {}
-    for s in SYMBOLS:
-        for c in sym_cols:
-            row = m[(m[c] == s) | (m[c] == s + "-EQ")]
-            if len(row):
-                out[s] = row.iloc[0][tok_col]
-                break
-        else:
-            print("token not found:", s)
-    return out
-
-
 # ---------------------------------------------------------------- main ----
 def main():
     d = datetime.strptime(TARGET_DATE, "%Y-%m-%d")
@@ -164,18 +133,22 @@ def main():
     day_start, day_end = d.replace(hour=9, minute=15), d.replace(hour=15, minute=30)
 
     api = login()
-    tokens = load_tokens()
     out = []
-    for sym, tok in tokens.items():
+    for sym, (exch, tok) in INDICES.items():
         print("->", sym)
-        intr = candles(api, tok, "THIRTY_MINUTE", lb_start, lb_end)
+        intr = candles(api, exch, tok, "THIRTY_MINUTE", lb_start, lb_end)
         time.sleep(0.4)
-        day = candles(api, tok, "ONE_DAY", day_start, day_end)
+        day = candles(api, exch, tok, "ONE_DAY", day_start, day_end)
         time.sleep(0.4)
         if intr is None or day is None or len(intr) < 20:
             print("   skipped (no data)")
             continue
-        r = frvp(intr["h"], intr["l"], intr["v"])
+        vols = intr["v"].astype(float)
+        basis = "Index volume"
+        if vols.sum() <= 0:                      # indices have no volume -> equal weight
+            vols = np.ones(len(intr))
+            basis = "Equal-weight (no index volume)"
+        r = frvp(intr["h"], intr["l"], vols)
         if r is None:
             continue
         point, vhigh, vlow = r
@@ -183,7 +156,7 @@ def main():
         row = {"Date": TARGET_DATE, "Symbol": sym,
                "Day High": day["h"].iloc[0], "Day Low": day["l"].iloc[0],
                "Day Close": day["c"].iloc[0],
-               "Point": point, "VHIGH": vhigh, "VLOW": vlow}
+               "Point": point, "VHIGH": vhigh, "VLOW": vlow, "Volume basis": basis}
         for name, ratio in FIBS:
             row[name] = vlow + rng * ratio
         out.append(row)
