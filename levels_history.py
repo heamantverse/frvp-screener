@@ -156,6 +156,17 @@ def fut_contract(master, name, d):
     m = m[m["exp"] >= pd.Timestamp(d.date())].sort_values("exp")
     if m.empty:
         return None
+    # Must be the genuine near-month contract of that date (what NIFTY1! shows): the date has to
+    # fall AFTER the previous month's expiry (same weekday, last of previous month). Otherwise the
+    # real near-month contract has already expired, Angel has no data for it, and a far-month
+    # contract would give a wrong profile -> skip.
+    exp = m.iloc[0]["exp"]
+    pm_year, pm_month = (exp.year - 1, 12) if exp.month == 1 else (exp.year, exp.month - 1)
+    last = pd.Timestamp(pm_year, pm_month, 1) + pd.offsets.MonthEnd(0)
+    while last.weekday() != exp.weekday():
+        last -= pd.Timedelta(days=1)
+    if pd.Timestamp(d.date()) <= last:
+        return None
     row = m.iloc[0]
     return exch, str(row["token"]), str(row["symbol"])
 

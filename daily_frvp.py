@@ -33,6 +33,8 @@ DATES = os.getenv("DATES", "").strip()
 SEND_MONTH = os.getenv("SEND_MONTH", "").strip()
 TG_TOKEN, TG_CHAT = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
 IST = timezone(timedelta(hours=5, minutes=30))
+# market holidays (YYYY-MM-DD, comma separated) so "next trading day" skips them; add more via env HOLIDAYS
+HOLIDAYS = {x.strip() for x in os.getenv("HOLIDAYS", "2026-10-02").split(",") if x.strip()}
 COLS = ["Date", "Symbol", "Contract", "Bars", "Day High", "Day Low", "Day Close",
         "Point", "VHIGH", "VLOW", "Total Volume"]
 
@@ -45,8 +47,15 @@ def _gh_headers():
 def gh_read():
     url = f"https://api.github.com/repos/{DATA_REPO}/contents/{HIST_PATH}"
     r = requests.get(url, headers=_gh_headers(), timeout=60)
+    if r.status_code == 401:
+        raise SystemExit("GitHub 401: DATA_TOKEN is invalid/expired. Create a new fine-grained token "
+                         "(repo scope-data, Contents: Read and write) and update the secret.")
     if r.status_code == 404:
-        return pd.DataFrame(columns=COLS), None
+        chk = requests.get(f"https://api.github.com/repos/{DATA_REPO}", headers=_gh_headers(), timeout=60)
+        if chk.status_code != 200:
+            raise SystemExit(f"GitHub {chk.status_code}: token cannot see repo {DATA_REPO} "
+                             "(wrong repo name or token has no access to it).")
+        return pd.DataFrame(columns=COLS), None      # repo ok, file not created yet
     r.raise_for_status()
     j = r.json()
     text = base64.b64decode(j["content"]).decode()
@@ -119,7 +128,7 @@ def fib_cols(vlow, vhigh):
 
 def next_weekday(d):
     n = d + timedelta(days=1)
-    while n.weekday() >= 5:
+    while n.weekday() >= 5 or n.strftime("%Y-%m-%d") in HOLIDAYS:
         n += timedelta(days=1)
     return n
 
@@ -186,9 +195,9 @@ def main():
     new = []
 
     if DATES or not SEND_MONTH:
-        dates = LH.parse_dates(DATES) if DATES else ([today] if today.weekday() < 5 else [])
+        dates = LH.parse_dates(DATES) if DATES else ([today] if today.weekday() < 5 and today.strftime("%Y-%m-%d") not in HOLIDAYS else [])
         if not dates:
-            print("weekend - nothing to do")
+            print("weekend/holiday - nothing to do")
         else:
             api = LH.login()
             master = LH.load_master()
