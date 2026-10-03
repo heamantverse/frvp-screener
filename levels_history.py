@@ -132,16 +132,25 @@ def candles(api, token, interval, start, end, tries=3):
 
 
 def load_tokens(path="nse_equity_master.csv"):
-    m = pd.read_csv(path)
+    m = pd.read_csv(path, dtype=str)
     m.columns = [c.strip().lower() for c in m.columns]
-    sym_col = next(c for c in ("symbol", "tradingsymbol") if c in m.columns)
-    tok_col = next(c for c in ("token", "symboltoken") if c in m.columns)
-    m[sym_col] = m[sym_col].astype(str).str.upper()
+    print("CSV columns:", list(m.columns))
+    cols = list(m.columns)
+    tok_col = next((c for c in cols if "token" in c), None)
+    sym_cols = [c for c in cols if c != tok_col and any(k in c for k in ("symbol", "name", "scrip", "ticker"))]
+    if tok_col is None or not sym_cols:
+        print(m.head())
+        raise SystemExit(f"Could not find token/symbol column. Columns: {cols}")
+    print("using token column:", tok_col, "| symbol columns:", sym_cols)
+    for c in sym_cols:
+        m[c] = m[c].astype(str).str.strip().str.upper()
     out = {}
     for s in SYMBOLS:
-        row = m[(m[sym_col] == s) | (m[sym_col] == s + "-EQ")]
-        if len(row):
-            out[s] = row.iloc[0][tok_col]
+        for c in sym_cols:
+            row = m[(m[c] == s) | (m[c] == s + "-EQ")]
+            if len(row):
+                out[s] = row.iloc[0][tok_col]
+                break
         else:
             print("token not found:", s)
     return out
