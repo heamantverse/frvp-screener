@@ -28,7 +28,10 @@ ROWS = 24                    # same as Pine "Rows"
 VA_PCT = 0.70                # same as Pine "Value Area %"
 TICK = 0.1                   # index future tick as shown on TradingView (1 decimal)
 
-SCRIP_MASTER = "https://margincalculator.angelbroking.com/OpenAPI_Files/OpenAPIScripMaster.json"
+SCRIP_MASTER_URLS = [
+    "https://margincalculator.angelbroking.com/OpenAPI_Files/files/OpenAPIScripMaster.json",
+    "https://margincalculator.angelone.in/OpenAPI_Files/files/OpenAPIScripMaster.json",
+]
 INDICES = ["NIFTY", "BANKNIFTY", "SENSEX"]
 FUT_EXCH = {"NIFTY": "NFO", "BANKNIFTY": "NFO", "SENSEX": "BFO"}
 
@@ -126,9 +129,18 @@ def candles(api, exch, token, interval, start, end, tries=3):
 
 
 def load_master():
-    r = requests.get(SCRIP_MASTER, timeout=120)
-    r.raise_for_status()
-    return pd.DataFrame(r.json())
+    last = None
+    for url in SCRIP_MASTER_URLS:
+        try:
+            r = requests.get(url, timeout=120)
+            r.raise_for_status()
+            df = pd.DataFrame(r.json())
+            print("scrip master loaded:", len(df), "rows from", url)
+            return df
+        except Exception as e:
+            print("scrip master failed:", url, e)
+            last = e
+    raise SystemExit(f"Could not load Angel scrip master: {last}")
 
 
 def fut_contract(master, name, d):
