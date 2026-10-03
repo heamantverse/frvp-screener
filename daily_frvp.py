@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
+from openpyxl import Workbook
 import requests
 
 import levels_history as LH
@@ -173,9 +174,10 @@ def next_day_pack(rows):
 
 
 def style_sheet(ws):
+    """Simple header + filter for plain sheets."""
     from openpyxl.styles import Font, PatternFill
     ws.freeze_panes = "C2"
-    ws.auto_filter.ref = ws.dimensions                      # filter arrows on every column
+    ws.auto_filter.ref = ws.dimensions
     for c in ws[1]:
         c.font = Font(bold=True)
         c.fill = PatternFill("solid", fgColor="DDDDDD")
@@ -184,40 +186,98 @@ def style_sheet(ws):
         ws.column_dimensions[col[0].column_letter].width = min(max(11, w + 2), 34)
 
 
+def write_index_sheet(wb, sym, rows, with_actual):
+    """One sheet per index. One row per date: FRVP of the previous day + fib levels (+ actual H/L/C)."""
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    grey, head, touch = (PatternFill("solid", fgColor=c) for c in ("D0D0D0", "EDEDED", "FFF2CC"))
+    ratios = LH.FIB_RATIOS
+    heads = ["Date", "Based on FRVP of", "Contract", "VLOW (ZB)", "Point (PICK MOVE)", "VHIGH (1B)"]
+    heads += [f"{r:g}\n{LH.FIB_NAMES.get(r, '')}".strip() for r in ratios]
+    if with_actual:
+        heads += ["Day High", "Day Low", "Day Close"]
+    n, f0, f1 = len(heads), 7, 6 + len(ratios)
+
+    ws = wb.create_sheet(sym)
+    ws.append([""] * n)                                   # row 1: group band
+    groups = [((1, 3), ""), ((4, 6), "FRVP (previous day)"), ((f0, f1), "FIB LEVELS")]
+    if with_actual:
+        groups.append(((f1 + 1, n), "ACTUAL (that day)"))
+    for (c0, c1), txt in groups:
+        ws.merge_cells(start_row=1, start_column=c0, end_row=1, end_column=c1)
+        ws.cell(1, c0, txt)
+    for c in range(1, n + 1):
+        cell = ws.cell(1, c)
+        cell.fill, cell.font = grey, Font(bold=True)
+        cell.alignment = Alignment(horizontal="center")
+    ws.append(heads)                                      # row 2: headers (filter row)
+    for c in range(1, n + 1):
+        cell = ws.cell(2, c)
+        cell.fill, cell.font = head, Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[2].height = 34
+
+    for r in rows:
+        fibs = [round(r["vlow"] + (r["vhigh"] - r["vlow"]) * x, 2) for x in ratios]
+        vals = [r["date"], r["based"], r["contract"], r["vlow"], r["point"], r["vhigh"]] + fibs
+        if with_actual:
+            vals += [r["hi"], r["lo"], r["cl"]]
+        ws.append(vals)
+        i = ws.max_row
+        for c in range(4, n + 1):
+            ws.cell(i, c).number_format = "0.00"
+        if with_actual:                                   # yellow = price touched this level that day
+            for c in range(4, f1 + 1):
+                v = ws.cell(i, c).value
+                if r["lo"] <= v <= r["hi"]:
+                    ws.cell(i, c).fill = touch
+    ws.freeze_panes = "D3"
+    ws.auto_filter.ref = f"A2:{get_column_letter(n)}{max(ws.max_row, 2)}"
+    for c in range(1, n + 1):
+        ws.column_dimensions[get_column_letter(c)].width = 13 if c > 3 else (12 if c == 1 else 17)
+    ws.column_dimensions["E"].width = 15
+
+
+def build_next_day_file(rows, nd, path):
+    wb = Workbook()
+    wb.remove(wb.active)
+    for sym in LH.INDICES:
+        rs = [{"date": nd.strftime("%Y-%m-%d"), "based": r["Date"], "contract": r["Contract"],
+               "vlow": r["VLOW"], "point": r["Point"], "vhigh": r["VHIGH"]} for r in rows if r["Symbol"] == sym]
+        if rs:
+            write_index_sheet(wb, sym, rs, with_actual=False)
+    wb.save(path)
+
+
 # ---------------------------------------------------------- month file ----
 def build_month_file(hist, ym, path):
     h = hist.copy()
     h["Date"] = h["Date"].astype(str)
-    wide, long = [], []
-    for sym, g in h.sort_values("Date").groupby("Symbol"):
-        g = g.reset_index(drop=True)
+    wb = Workbook()
+    wb.remove(wb.active)
+    any_rows = False
+    for sym in LH.INDICES:
+        g = h[h["Symbol"] == sym].sort_values("Date").reset_index(drop=True)
+        rs = []
         for i in range(1, len(g)):
             cur, prev = g.iloc[i], g.iloc[i - 1]
-            if not str(cur["Date"]).startswith(ym):
-                continue
-            row = {"Date": cur["Date"], "Symbol": sym, "Based on FRVP of": prev["Date"],
-                   "Prev Point": prev["Point"], "Prev VHIGH (1B)": prev["VHIGH"],
-                   "Prev VLOW (ZB)": prev["VLOW"]}
-            row.update(fib_cols(prev["VLOW"], prev["VHIGH"]))
-            row.update({"Day High": cur["Day High"], "Day Low": cur["Day Low"],
-                        "Day Close": cur["Day Close"]})
-            wide.append(row)
-            for x in level_rows(prev["VLOW"], prev["VHIGH"], prev["Point"]):
-                long.append({"Date": cur["Date"], "Symbol": sym, "Based on FRVP of": prev["Date"], **x,
-                             "Day High": cur["Day High"], "Day Low": cur["Day Low"],
-                             "Day Close": cur["Day Close"],
-                             "Touched": "Y" if cur["Day Low"] <= x["Price"] <= cur["Day High"] else "N"})
-    wide = pd.DataFrame(wide).sort_values(["Date", "Symbol"]) if wide else pd.DataFrame()
-    long = pd.DataFrame(long).sort_values(["Date", "Symbol", "Price"], ascending=[True, True, False]) if long else pd.DataFrame()
-    raw = h[h["Date"].str.startswith(ym)].sort_values(["Date", "Symbol"])
-    if wide.empty and raw.empty:
+            if str(cur["Date"]).startswith(ym):
+                rs.append({"date": cur["Date"], "based": prev["Date"], "contract": prev["Contract"],
+                           "vlow": float(prev["VLOW"]), "point": float(prev["Point"]),
+                           "vhigh": float(prev["VHIGH"]), "hi": float(cur["Day High"]),
+                           "lo": float(cur["Day Low"]), "cl": float(cur["Day Close"])})
+        if rs:
+            any_rows = True
+            write_index_sheet(wb, sym, rs, with_actual=True)
+    raw = h[h["Date"].str.startswith(ym)].sort_values(["Symbol", "Date"])
+    if raw.empty and not any_rows:
         return False
-    with pd.ExcelWriter(path, engine="openpyxl") as xw:
-        long.to_excel(xw, index=False, sheet_name="Level list")
-        wide.to_excel(xw, index=False, sheet_name="Levels (wide)")
-        raw.to_excel(xw, index=False, sheet_name="FRVP")
-        for name in ("Level list", "Levels (wide)", "FRVP"):
-            style_sheet(xw.sheets[name])
+    ws = wb.create_sheet("FRVP (raw)")
+    ws.append(list(raw.columns))
+    for row in raw.itertuples(index=False):
+        ws.append(list(row))
+    style_sheet(ws)
+    wb.save(path)
     return True
 
 
@@ -247,9 +307,7 @@ def main():
                 msg, long_df, nd = next_day_pack(last_rows)
                 tg_message(msg, html_mode=True)
                 nf = f"levels_for_{nd:%Y-%m-%d}.xlsx"
-                with pd.ExcelWriter(nf, engine="openpyxl") as xw:
-                    long_df.to_excel(xw, index=False, sheet_name="Levels")
-                    style_sheet(xw.sheets["Levels"])
+                build_next_day_file(last_rows, nd, nf)
                 tg_doc(nf, f"Levels for {nd:%d %b %Y} (filterable)")
                 if not DATES and is_last_weekday_of_month(today):
                     months.add(today.strftime("%Y-%m"))
