@@ -136,7 +136,7 @@ def load_tokens(path="nse_equity_master.csv"):
     m.columns = [c.strip().lower() for c in m.columns]
     print("CSV columns:", list(m.columns))
     cols = list(m.columns)
-    tok_col = next((c for c in cols if "token" in c), None)
+    tok_col = next((c for c in cols if "token" in c or c in ("security_id", "securityid", "scrip_id")), None)
     sym_cols = [c for c in cols if c != tok_col and any(k in c for k in ("symbol", "name", "scrip", "ticker"))]
     if tok_col is None or not sym_cols:
         print(m.head())
