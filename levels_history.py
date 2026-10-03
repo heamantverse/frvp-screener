@@ -29,8 +29,8 @@ VA_PCT = 0.70                # same as Pine "Value Area %"
 TICK = 0.1                   # index future tick as shown on TradingView (1 decimal)
 
 SCRIP_MASTER_URLS = [
-    "https://margincalculator.angelbroking.com/OpenAPI_Files/files/OpenAPIScripMaster.json",
-    "https://margincalculator.angelone.in/OpenAPI_Files/files/OpenAPIScripMaster.json",
+    "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json",
+    "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json",
 ]
 INDICES = ["NIFTY", "BANKNIFTY", "SENSEX"]
 FUT_EXCH = {"NIFTY": "NFO", "BANKNIFTY": "NFO", "SENSEX": "BFO"}
