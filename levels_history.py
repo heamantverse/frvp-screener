@@ -43,7 +43,7 @@ FIB_NAMES = {0: "ZB", 1: "1B", 0.236: "REVERSAL", 0.618: "GOLDEN REVERSAL",
 
 
 # ---------------------------------------------------------------- FRVP ----
-def frvp(h, l, v, tick=TICK, rows=ROWS, va_pct=VA_PCT):
+def frvp(h, l, v, tick=TICK, rows=ROWS, va_pct=VA_PCT, detail=False):
     h, l, v = map(lambda a: np.asarray(a, dtype=float), (h, l, v))
     r_high, r_low = h.max(), l.min()
     if r_high <= r_low:
@@ -99,6 +99,8 @@ def frvp(h, l, v, tick=TICK, rows=ROWS, va_pct=VA_PCT):
         else:
             lo_i -= 1
         accu += nxt
+    if detail:
+        return point, hi[hi_i], lo[lo_i], dict(lo=lo, hi=hi, vol=vol, lo_i=lo_i, hi_i=hi_i, poc=poc)
     return point, hi[hi_i], lo[lo_i]          # Point (POC), VHIGH (1B), VLOW (ZB)
 
 
@@ -197,7 +199,7 @@ def main():
     dates = parse_dates(TARGET_DATE)
     api = login()
     master = load_master()
-    out = []
+    out, prof, bars = [], [], []
     for d in dates:
         s, e = d.replace(hour=9, minute=15), d.replace(hour=15, minute=30)
         for sym in INDICES:
@@ -212,9 +214,24 @@ def main():
             if df is None or len(df) < 50:
                 print("   skipped (no/low data)")
                 continue
-            r = frvp(df["h"], df["l"], df["v"])
+            r = frvp(df["h"], df["l"], df["v"], detail=True)
             if r is not None:
-                out.append(make_row(d, sym, fs, len(df), df, r))
+                point, vhigh, vlow, det = r
+                row = make_row(d, sym, fs, len(df), df, (point, vhigh, vlow))
+                v = df["v"].astype(float)
+                row["Total Volume"] = v.sum()
+                row["Zero-volume bars"] = int((v == 0).sum())
+                row["Max bar volume"] = v.max()
+                row["Max bar time"] = str(df["t"].iloc[int(v.values.argmax())])[11:16]
+                out.append(row)
+                tot = det["vol"].sum() or 1.0
+                for i in range(len(det["lo"])):
+                    prof.append({"Date": d.strftime("%Y-%m-%d"), "Symbol": sym, "Row": i,
+                                 "From": det["lo"][i], "To": det["hi"][i],
+                                 "Volume": det["vol"][i], "Volume %": 100 * det["vol"][i] / tot,
+                                 "In value area": "Y" if det["lo_i"] <= i <= det["hi_i"] else "",
+                                 "POC row": "POC" if i == det["poc"] else ""})
+                bars.append(df.assign(Date=d.strftime("%Y-%m-%d"), Symbol=sym))
 
     if not out:
         raise SystemExit("No data produced")
@@ -222,6 +239,9 @@ def main():
     fn = f"levels_{dates[0]:%Y-%m-%d}_{dates[-1]:%Y-%m-%d}.xlsx" if len(dates) > 1 else f"levels_{dates[0]:%Y-%m-%d}.xlsx"
     with pd.ExcelWriter(fn, engine="openpyxl") as xw:
         df.to_excel(xw, index=False, sheet_name="Levels")
+        pd.DataFrame(prof).round(2).to_excel(xw, index=False, sheet_name="Profile")
+        pd.concat(bars).rename(columns={"t": "Time", "o": "Open", "h": "High", "l": "Low",
+                                        "c": "Close", "v": "Volume"}).to_excel(xw, index=False, sheet_name="Candles")
         ws = xw.sheets["Levels"]
         ws.freeze_panes = "D2"
         for col in ws.columns:
