@@ -17,7 +17,7 @@ Env:
   DATES       optional, e.g. 2026-09-30,2026-10-01  (empty = today, IST)
   SEND_MONTH  optional, e.g. 2026-10  (send that month's file now)
 """
-import os, io, base64, time
+import os, io, base64, time, html
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -79,10 +79,12 @@ def upsert(hist, new):
 
 
 # ------------------------------------------------------------- telegram ----
-def tg_message(text):
+def tg_message(text, html_mode=False):
     if TG_TOKEN and TG_CHAT:
-        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                      data={"chat_id": TG_CHAT, "text": text}, timeout=60)
+        data = {"chat_id": TG_CHAT, "text": text}
+        if html_mode:
+            data["parse_mode"] = "HTML"
+        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data=data, timeout=60)
 
 
 def tg_doc(path, caption):
@@ -126,6 +128,15 @@ def fib_cols(vlow, vhigh):
     return {LH.fib_label(r): round(vlow + rng * r, 2) for r in LH.FIB_RATIOS}
 
 
+def level_rows(vlow, vhigh, point):
+    """Long format: one row per level (fibs on ZB..1B + PICK MOVE)."""
+    rng = vhigh - vlow
+    out = [{"Level": r, "Name": LH.FIB_NAMES.get(r, ""), "Price": round(vlow + rng * r, 2)}
+           for r in LH.FIB_RATIOS]
+    out.append({"Level": None, "Name": "PICK MOVE", "Price": round(float(point), 2)})
+    return out
+
+
 def next_weekday(d):
     n = d + timedelta(days=1)
     while n.weekday() >= 5 or n.strftime("%Y-%m-%d") in HOLIDAYS:
@@ -137,25 +148,47 @@ def is_last_weekday_of_month(d):
     return next_weekday(d).month != d.month
 
 
-def next_day_message(rows):
-    if not rows:
-        return None
+def html_table(rows):
+    rows = sorted(rows, key=lambda x: -x["Price"])           # highest price on top, like the chart
+    lines = [f"{'Level':<8}{'Name':<19}{'Price':>9}"]
+    for x in rows:
+        lvl = "POC" if x["Level"] is None else f"{x['Level']:g}"
+        lines.append(f"{lvl:<8}{x['Name']:<19}{x['Price']:>9.2f}")
+    return html.escape("\n".join(lines))
+
+
+def next_day_pack(rows):
+    """Telegram HTML text + long-format DataFrame for tomorrow's levels."""
     d = datetime.strptime(rows[0]["Date"], "%Y-%m-%d")
     nd = next_weekday(d)
-    lines = [f"Levels for {nd:%d %b %Y} (from FRVP of {d:%d %b %Y})"]
+    parts = [f"<b>Levels for {nd:%d %b %Y}</b> (from FRVP of {d:%d %b %Y})"]
+    long = []
     for r in rows:
-        lines.append(f"\n{r['Symbol']}  ({r['Contract']})")
-        for k, v in fib_cols(r["VLOW"], r["VHIGH"]).items():
-            lines.append(f"{k}: {v}")
-        lines.append(f"PICK MOVE (Point): {r['Point']}")
-    return "\n".join(lines)
+        lv = level_rows(r["VLOW"], r["VHIGH"], r["Point"])
+        parts.append(f"\n<b>{r['Symbol']}</b>  {r['Contract']}\n<pre>{html_table(lv)}</pre>")
+        for x in lv:
+            long.append({"Date": nd.strftime("%Y-%m-%d"), "Symbol": r["Symbol"], "Contract": r["Contract"],
+                         "Based on FRVP of": r["Date"], **x})
+    return "\n".join(parts), pd.DataFrame(long), nd
+
+
+def style_sheet(ws):
+    from openpyxl.styles import Font, PatternFill
+    ws.freeze_panes = "C2"
+    ws.auto_filter.ref = ws.dimensions                      # filter arrows on every column
+    for c in ws[1]:
+        c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor="DDDDDD")
+    for col in ws.columns:
+        w = max((len(str(c.value)) for c in col if c.value is not None), default=8)
+        ws.column_dimensions[col[0].column_letter].width = min(max(11, w + 2), 34)
 
 
 # ---------------------------------------------------------- month file ----
 def build_month_file(hist, ym, path):
     h = hist.copy()
     h["Date"] = h["Date"].astype(str)
-    lv = []
+    wide, long = [], []
     for sym, g in h.sort_values("Date").groupby("Symbol"):
         g = g.reset_index(drop=True)
         for i in range(1, len(g)):
@@ -168,20 +201,23 @@ def build_month_file(hist, ym, path):
             row.update(fib_cols(prev["VLOW"], prev["VHIGH"]))
             row.update({"Day High": cur["Day High"], "Day Low": cur["Day Low"],
                         "Day Close": cur["Day Close"]})
-            lv.append(row)
-    lev = pd.DataFrame(lv).sort_values(["Date", "Symbol"]) if lv else pd.DataFrame()
+            wide.append(row)
+            for x in level_rows(prev["VLOW"], prev["VHIGH"], prev["Point"]):
+                long.append({"Date": cur["Date"], "Symbol": sym, "Based on FRVP of": prev["Date"], **x,
+                             "Day High": cur["Day High"], "Day Low": cur["Day Low"],
+                             "Day Close": cur["Day Close"],
+                             "Touched": "Y" if cur["Day Low"] <= x["Price"] <= cur["Day High"] else "N"})
+    wide = pd.DataFrame(wide).sort_values(["Date", "Symbol"]) if wide else pd.DataFrame()
+    long = pd.DataFrame(long).sort_values(["Date", "Symbol", "Price"], ascending=[True, True, False]) if long else pd.DataFrame()
     raw = h[h["Date"].str.startswith(ym)].sort_values(["Date", "Symbol"])
-    if lev.empty and raw.empty:
+    if wide.empty and raw.empty:
         return False
     with pd.ExcelWriter(path, engine="openpyxl") as xw:
-        lev.to_excel(xw, index=False, sheet_name="Levels")
+        long.to_excel(xw, index=False, sheet_name="Level list")
+        wide.to_excel(xw, index=False, sheet_name="Levels (wide)")
         raw.to_excel(xw, index=False, sheet_name="FRVP")
-        for name in ("Levels", "FRVP"):
-            ws = xw.sheets[name]
-            ws.freeze_panes = "C2"
-            for col in ws.columns:
-                w = max((len(str(c.value)) for c in col if c.value is not None), default=8)
-                ws.column_dimensions[col[0].column_letter].width = min(max(11, w + 2), 34)
+        for name in ("Level list", "Levels (wide)", "FRVP"):
+            style_sheet(xw.sheets[name])
     return True
 
 
@@ -207,9 +243,14 @@ def main():
                 hist = upsert(hist, new)
                 gh_write(hist, sha, f"FRVP {dates[0]:%Y-%m-%d}..{dates[-1]:%Y-%m-%d}")
                 last = max(r["Date"] for r in new)
-                msg = next_day_message([r for r in new if r["Date"] == last])
-                if msg:
-                    tg_message(msg)
+                last_rows = [r for r in new if r["Date"] == last]
+                msg, long_df, nd = next_day_pack(last_rows)
+                tg_message(msg, html_mode=True)
+                nf = f"levels_for_{nd:%Y-%m-%d}.xlsx"
+                with pd.ExcelWriter(nf, engine="openpyxl") as xw:
+                    long_df.to_excel(xw, index=False, sheet_name="Levels")
+                    style_sheet(xw.sheets["Levels"])
+                tg_doc(nf, f"Levels for {nd:%d %b %Y} (filterable)")
                 if not DATES and is_last_weekday_of_month(today):
                     months.add(today.strftime("%Y-%m"))
             else:
